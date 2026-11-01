@@ -467,6 +467,8 @@ def run():
         state["pending"] = saved.get("pending", [])
         if not LIVE:
             state["balance"] = saved.get("balance", BALANCE)
+        for k in ("started", "wins", "losses", "pnl", "windows", "bids", "fills", "net_errors"):  # totals carry on
+            state[k] = saved.get(k, state[k])
         print(f"restored {len(state['pending'])} pending positions")
     except (OSError, ValueError):
         pass

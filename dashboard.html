@@ -34,7 +34,8 @@
     <div class="card"><div class="k">Win rate</div><div class="v" id="wr">–</div></div>
     <div class="card"><div class="k">Windows / Bids / Fills</div><div class="v" id="wbf">–</div></div>
     <div class="card"><div class="k">Pending settle</div><div class="v" id="pend">–</div></div>
-    <div class="card"><div class="k">Balance (USDC)</div><div class="v" id="bal">–</div></div>
+    <div class="card"><div class="k">Free balance (USDC)</div><div class="v" id="bal">–</div></div>
+    <div class="card"><div class="k">Total (free + in bids &amp; positions)</div><div class="v" id="total">–</div></div>
   </div>
 
   <div class="card scroll" style="margin-bottom:14px">
@@ -84,6 +85,11 @@ async function tick() {
     $('wbf').textContent = `${s.windows} / ${s.bids} / ${s.fills}`;
     $('pend').textContent = s.pending.length;
     $('bal').textContent = s.balance == null ? '–' : s.balance.toFixed(2);
+    // money tied up at cost: open bids (dry run locks the full bid; live only spends on fills) + filled shares
+    const locked = Object.values(s.coins).filter(c => c.position)
+      .reduce((a, c) => a + c.position.entry * (s.mode === 'LIVE' ? c.position.held : s.config.size), 0)
+      + s.pending.reduce((a, p) => a + p.entry * p.held, 0);
+    $('total').textContent = s.balance == null ? '–' : (s.balance + locked).toFixed(2);
     const open = Object.entries(s.coins).filter(([, c]) => c.position && c.position.held > 0)
       .map(([k, c]) => [k.replace('-', ' ').toUpperCase(), c.position.side, c.position.entry, c.position.held,
         `in window · ${c.market ? c.market.seconds_left : '?'}s left · bid ${c.market ? c.market.books[c.market.outcomes.indexOf(c.position.side)][0].toFixed(3) : '?'}`])

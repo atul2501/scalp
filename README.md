@@ -46,18 +46,21 @@ BALANCE=100
 
 **Live:**
 
-1. On polymarket.com, deposit USDC.
-2. In Settings, export the private key.
-3. Copy the wallet address from your profile.
-4. Set these in `.env`:
+1. On polymarket.com, deposit money. It is held as pUSD.
+2. Make one small trade on the website. This sets up the trading approvals; the bot can't do that step itself.
+3. In Settings, export the private key.
+4. Copy the wallet address from your profile.
+5. Set these in `.env`:
 
 ```
 LIVE=1
 PRIVATE_KEY=0x...        # only on the server, never in git or chat
-FUNDER=0x...             # your Polymarket wallet address
-SIGNATURE_TYPE=1         # 1 = email/Google login, 2 = MetaMask, 0 = plain wallet
+FUNDER=0x...             # your Polymarket wallet address (profile), not the private key's own address
+SIGNATURE_TYPE=3         # 3 = any account made since May 2026; 1 = older email/Google, 2 = older MetaMask
 DASH_HOST=0.0.0.0
 ```
+
+If the log shows `balance 0.00` in live mode, `SIGNATURE_TYPE` or `FUNDER` is wrong.
 
 The other settings, with their defaults, are explained in `.env.example`: `COINS`, `SPANS`, `SIZE`, `STEADY`, `LATENCY`, `PORT`. `.env` is in `.gitignore`, and the dashboard never serves it.
 
@@ -104,7 +107,7 @@ sudo systemctl stop scalp
 mkdir -p dryrun && mv status.json trades.csv skipped.csv bot.log dryrun/ 2>/dev/null
 nano .env                    # LIVE=1, PRIVATE_KEY, FUNDER, SIGNATURE_TYPE
 sudo systemctl start scalp
-head -5 bot.log              # mode=LIVE, "geoblock ok (SE)", "balance <your USDC>"
+head -5 bot.log              # mode=LIVE, "geoblock ok (SE)", "balance <your pUSD>"
 ```
 
 If the log says the country is blocked, the bot exits without trading.

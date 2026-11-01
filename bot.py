@@ -43,12 +43,11 @@ WS = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
 
 client = None
 if LIVE:
-    from py_clob_client.client import ClobClient
-    from py_clob_client.clob_types import OrderArgs, MarketOrderArgs, OrderType, BalanceAllowanceParams, AssetType
-    from py_clob_client.order_builder.constants import BUY, SELL
+    from py_clob_client_v2 import ClobClient, OrderArgs, MarketOrderArgs, OrderType, BalanceAllowanceParams, AssetType, OrderPayload
+    from py_clob_client_v2.order_builder.constants import BUY, SELL
     client = ClobClient(CLOB, key=os.environ["PRIVATE_KEY"], chain_id=137,
-                        signature_type=int(os.getenv("SIGNATURE_TYPE", "1")), funder=os.getenv("FUNDER"))
-    client.set_api_creds(client.create_or_derive_api_creds())
+                        signature_type=int(os.getenv("SIGNATURE_TYPE", "3")), funder=os.getenv("FUNDER"))
+    client.set_api_creds(client.create_or_derive_api_key())
 
 state = {"mode": "LIVE" if LIVE else "DRY-RUN", "started": datetime.now(timezone.utc).isoformat(timespec="seconds"),
          "config": {"entry": f"{ENTRY_MIN}-{ENTRY_MAX}", "window": ENTRY_WINDOW, "stop": STOP, "steady": STEADY, "size": SIZE,
@@ -144,7 +143,7 @@ def keep_running(losses, pnl_):
 
 def live_balance():
     r = client.get_balance_allowance(BalanceAllowanceParams(asset_type=AssetType.COLLATERAL))
-    return int(r["balance"]) / 1e6  # USDC has 6 decimals
+    return int(r["balance"]) / 1e6  # pUSD has 6 decimals
 
 
 def reserve(cost):
@@ -415,7 +414,7 @@ def trade_window(coin, m):
                 if bid <= STOP:
                     if LIVE:
                         if order_id:
-                            client.cancel(order_id)
+                            client.cancel_order(OrderPayload(orderID=order_id))
                         client.post_order(client.create_market_order(MarketOrderArgs(
                             token_id=m["tokens"][side_idx], amount=held, side=SELL)), OrderType.FAK)
                     log(m["slug"], m["outcomes"][side_idx], entry, bid, held, "stop")
@@ -425,7 +424,7 @@ def trade_window(coin, m):
     finally:
         feed.close()
         if LIVE and order_id and not stopped:
-            client.cancel(order_id)  # drop any unfilled remainder
+            client.cancel_order(OrderPayload(orderID=order_id))  # drop any unfilled remainder
         if side_idx is not None and not LIVE:
             bump("balance", entry * (SIZE - held))  # unfilled part of the bid frees its money
 
@@ -483,7 +482,7 @@ def run():
         pass
     if LIVE:
         state["balance"] = live_balance()
-    print(f"balance {state['balance']:.2f} USDC")
+    print(f"balance {state['balance']:.2f} USDC" + (" (0 in live: check SIGNATURE_TYPE and FUNDER in .env)" if LIVE and not state["balance"] else ""))
     signal.signal(signal.SIGTERM, lambda *a: halt.set())  # systemctl stop: windows exit and cancel their orders
     state["status"] = "running"
     threads = [threading.Thread(target=coin_loop, args=(k,), daemon=True) for k in SERIES]

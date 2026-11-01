@@ -1,9 +1,10 @@
-"""Polymarket 5-min crypto Up/Down: maker-bid 0.99 on the near-certain side, emergency stop, quit after 5 losses.
+"""Polymarket crypto Up/Down: maker-bid 0.99 on the near-certain side, hold to the end, quit after 5 losses or -$20.
 
-LIVE=0 (default) is dry-run: public endpoints only, simulated fills with a queue model.
-One thread per coin; dashboard on PORT while the bot runs.
+LIVE=0 (default) is dry-run: public endpoints only, simulated fills with a live-like queue model
+(order latency, fair-share cancels, fills from the other token, a money limit). LIVE=1 + keys in .env = real orders.
+One thread per coin/window series; dashboard on PORT while the bot runs.
 """
-import csv, json, os, sys, threading, time
+import csv, json, os, signal, sys, threading, time
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
@@ -13,8 +14,11 @@ import websocket
 from dotenv import load_dotenv
 
 load_dotenv()
-COINS = ["btc", "eth", "sol", "doge", "xrp", "bnb"]  # hype also exists but its book is too thin
-SPANS = {"5m": 300, "15m": 900, "1h": 3600, "4h": 14400}  # every coin trades each of these windows
+ALL_SPANS = {"5m": 300, "15m": 900, "1h": 3600, "4h": 14400}  # every coin trades each of these windows
+# hype also exists but its book is too thin
+COINS = os.getenv("COINS", "btc,eth,sol,doge,xrp,bnb").replace(" ", ",").split(",")
+COINS = [c for c in COINS if c]
+SPANS = {s: ALL_SPANS[s] for s in os.getenv("SPANS", "5m,15m,1h,4h").replace(" ", ",").split(",") if s}
 SERIES = [f"{c}-{s}" for s in SPANS for c in COINS]   # e.g. "btc-5m", one thread each
 HOURLY_NAME = {"btc": "bitcoin", "eth": "ethereum", "sol": "solana", "doge": "dogecoin", "xrp": "xrp", "bnb": "bnb"}
 ENTRY_MIN = 0.98    # side's best bid must be at least this before we join...
@@ -22,9 +26,14 @@ ENTRY_MAX = 0.99    # ...and we always bid exactly this (maker, front of the que
 ENTRY_WINDOW = 3600  # enter any time in the last N seconds; >= window length = join as early as possible
 STOP = None         # hold to the end: every stop so far (0.90 and 0.30) sold a side that went on to win
 STEADY = 20         # side must hold >= ENTRY_MIN this many seconds before we bid (late jumps = close markets)
-SIZE = 10           # shares (market min is 5)
+NO_NEW_BIDS = 10    # no new bids in the last N seconds (prices swing, fills are worst)
+SIZE = int(os.getenv("SIZE", "10"))  # shares (market min is 5)
+BALANCE = float(os.getenv("BALANCE", "100"))  # dry-run play money; live reads the real USDC balance
+LATENCY = 0.07      # dry-run: our order lands this long after we decide (measured ~65 ms Stockholm -> CLOB)
+MAX_SAME_WAY = 3    # at most this many open fills needing the same direction (Up or Down) at once
 MAX_LOSSES = 5
-POLL = 0.2
+MAX_LOSS_USD = 20   # also stop once P&L since start reaches -$20
+POLL = 0.2          # max wait between checks; the loop wakes on every websocket update anyway
 PORT = 8000
 DASH_HOST = os.getenv("DASH_HOST", "127.0.0.1")  # 0.0.0.0 to reach the dashboard from outside
 LIVE = os.getenv("LIVE", "0") == "1"
@@ -35,7 +44,7 @@ WS = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
 client = None
 if LIVE:
     from py_clob_client.client import ClobClient
-    from py_clob_client.clob_types import OrderArgs, MarketOrderArgs, OrderType
+    from py_clob_client.clob_types import OrderArgs, MarketOrderArgs, OrderType, BalanceAllowanceParams, AssetType
     from py_clob_client.order_builder.constants import BUY, SELL
     client = ClobClient(CLOB, key=os.environ["PRIVATE_KEY"], chain_id=137,
                         signature_type=int(os.getenv("SIGNATURE_TYPE", "1")), funder=os.getenv("FUNDER"))
@@ -43,8 +52,8 @@ if LIVE:
 
 state = {"mode": "LIVE" if LIVE else "DRY-RUN", "started": datetime.now(timezone.utc).isoformat(timespec="seconds"),
          "config": {"entry": f"{ENTRY_MIN}-{ENTRY_MAX}", "window": ENTRY_WINDOW, "stop": STOP, "steady": STEADY, "size": SIZE,
-                    "max_losses": MAX_LOSSES},
-         "wins": 0, "losses": 0, "pnl": 0.0, "windows": 0, "bids": 0, "fills": 0, "net_errors": 0,
+                    "max_losses": MAX_LOSSES, "max_loss_usd": MAX_LOSS_USD, "latency": LATENCY},
+         "wins": 0, "losses": 0, "pnl": 0.0, "balance": BALANCE, "windows": 0, "bids": 0, "fills": 0, "net_errors": 0,
          "coins": {k: {"market": None, "position": None} for k in SERIES}, "pending": [], "status": "starting"}
 lock = threading.Lock()     # guards counters, pending, trades.csv and status.json
 halt = threading.Event()    # kill switch: coin threads finish their window and exit
@@ -68,7 +77,7 @@ def slug_for(coin, span, ts):
         et = datetime.fromtimestamp(int(ts), ZoneInfo("America/New_York"))
         start = int(et.replace(hour=et.hour // 4 * 4, minute=0, second=0, microsecond=0).timestamp())
         return f"{coin}-updown-4h-{start}"
-    start = int(ts) // SPANS[span] * SPANS[span]
+    start = int(ts) // ALL_SPANS[span] * ALL_SPANS[span]
     if span != "1h":
         return f"{coin}-updown-{span}-{start}"
     # hourly markets are named after the New York hour they start in
@@ -84,7 +93,7 @@ def pnl(entry, exit_, size):
 
 def entry_price(bid, ask, left):
     """Bid ENTRY_MAX the first moment it can rest on the book; None = don't enter."""
-    if left > ENTRY_WINDOW or bid < ENTRY_MIN:
+    if left > ENTRY_WINDOW or left < NO_NEW_BIDS or bid < ENTRY_MIN:
         return None
     p = ENTRY_MAX
     return p if ask > p else None  # ask above us, so the bid rests = maker
@@ -95,10 +104,12 @@ def steady(since, now):
     return since is not None and now - since >= STEADY
 
 
-def sim_fill(price, ahead, sells, level):
+def sim_fill(price, ahead, sells, level, prev):
     """Dry-run queue model. Taker sells at our price eat the queue ahead of us first;
-    a sell below our price means our whole level was cleared. Returns (ahead, filled)."""
-    filled = 0.0
+    a sell below our price means our whole level was cleared. `prev` and `level` are the
+    level size (without us) before and after; any drop not explained by trades is cancels,
+    spread evenly in front of and behind us. Returns (ahead, filled)."""
+    filled = traded = 0.0
     for p, s in sells:
         if p < price:
             return 0.0, float("inf")
@@ -106,8 +117,35 @@ def sim_fill(price, ahead, sells, level):
             eat = min(ahead, s)
             ahead -= eat
             filled += s - eat
-    # ponytail: cancels anywhere in the level shrink it; assume they were ahead of us (slightly optimistic)
+            traded += s
+    rest = prev - traded  # level size if nobody had cancelled
+    if 0 < level < rest:
+        ahead *= level / rest
     return min(ahead, level), filled
+
+
+def same_way(coins, side):
+    """Open filled positions (still inside their window) betting on `side`."""
+    return sum(1 for c in coins.values() if c["position"] and c["position"]["held"] and c["position"]["side"] == side)
+
+
+def keep_running(losses, pnl_):
+    return losses < MAX_LOSSES and pnl_ > -MAX_LOSS_USD
+
+
+def live_balance():
+    r = client.get_balance_allowance(BalanceAllowanceParams(asset_type=AssetType.COLLATERAL))
+    return int(r["balance"]) / 1e6  # USDC has 6 decimals
+
+
+def reserve(cost):
+    """Dry-run: lock money for a resting bid, like the exchange does. Live: just check the last known balance."""
+    with lock:
+        if state["balance"] < cost:
+            return False
+        if not LIVE:
+            state["balance"] = round(state["balance"] - cost, 4)
+        return True
 
 
 def get(url, **params):
@@ -144,6 +182,8 @@ class Feed:
     def __init__(self, tokens):
         self.books = {t: ({}, {}) for t in tokens}
         self.sells = {t: [] for t in tokens}
+        self.other = {tokens[0]: tokens[1], tokens[1]: tokens[0]}
+        self.changed = threading.Event()  # set on every update so the trading loop reacts at once
         self.last = 0.0
         self.alive = True
         self.lock = threading.Lock()
@@ -183,8 +223,13 @@ class Feed:
                                 book[p] = s
                             else:
                                 book.pop(p, None)
-                elif kind == "last_trade_price" and tok in self.sells and x.get("side") == "SELL":
-                    self.sells[tok].append((float(x["price"]), float(x["size"])))
+                elif kind == "last_trade_price" and tok in self.sells:
+                    p = float(x["price"])
+                    if x.get("side") == "SELL":
+                        self.sells[tok].append((p, float(x["size"])))
+                    else:  # buying one token at p also fills bids on the other at 1 - p (the exchange mints a pair)
+                        self.sells[self.other[tok]].append((round(1 - p, 4), float(x["size"])))
+        self.changed.set()
 
     def top(self, token):
         """(best bid, best ask)."""
@@ -233,6 +278,8 @@ def settle_pending():
             payout = float(r["prices"][p["idx"]])
             closed_at = datetime.fromtimestamp(p["end"], timezone.utc)
             log(p["slug"], p["side"], p["entry"], payout, p["held"], "win" if payout == 1.0 else "loss", closed_at)
+            if not LIVE:
+                bump("balance", payout * p["held"])  # as if claimed right away
             with lock:
                 state["pending"].remove(p)
 
@@ -265,11 +312,17 @@ def trade_window(coin, m):
     """Run one 5-min window for one coin. Leaves a filled-and-unstopped position in state['pending']."""
     view = state["coins"][coin]
     feed = Feed(m["tokens"])
-    order_id, side_idx, entry, held, ahead = None, None, None, 0.0, 0.0
+    order_id, side_idx, entry, held, ahead, prev = None, None, None, 0.0, None, 0.0
     stopped = False
     since = [None] * len(m["tokens"])  # when each side's bid last reached ENTRY_MIN
+    lands = checked = 0.0  # dry-run: when our order reaches the book; live: last fill check
+    if LIVE:
+        for t in m["tokens"]:  # cached by the client, so posting the order needs no extra requests
+            client.get_tick_size(t)
+            client.get_neg_risk(t)
     try:
         while time.time() < m["end"] and not halt.is_set():
+            feed.changed.clear()
             books = [feed.top(t) for t in m["tokens"]]
             left = int(m["end"] - time.time())
             view["market"] = {"slug": m["slug"], "outcomes": m["outcomes"], "books": books, "seconds_left": left}
@@ -281,13 +334,20 @@ def trade_window(coin, m):
                     entry = entry_price(bid, ask, left)
                     if entry is None or not steady(since[i], now):
                         continue
+                    if same_way(state["coins"], m["outcomes"][i]) >= MAX_SAME_WAY:
+                        continue  # too many open bets on one direction already
+                    if not reserve(entry * SIZE):
+                        if not view.get("low"):
+                            print(f"  {coin} low balance ({state['balance']:.2f}), skipping bid")
+                        view["low"] = True
+                        continue
+                    view["low"] = False
                     side_idx, tok = i, m["tokens"][i]
-                    ahead = feed.level(tok, entry)
-                    feed.take_sells(tok)  # only trades after we post count toward our fill
+                    lands = now + LATENCY
                     bump("bids")
                     view["position"] = {"side": m["outcomes"][i], "status": "bidding", "held": 0,
-                                         "entry": entry, "ahead": round(ahead, 2)}
-                    print(f"  {coin} BID {m['outcomes'][i]} {SIZE}@{entry}  queue ahead {ahead:.0f}  {left}s left")
+                                         "entry": entry, "ahead": round(feed.level(tok, entry), 2)}
+                    print(f"  {coin} BID {m['outcomes'][i]} {SIZE}@{entry}  queue ahead {feed.level(tok, entry):.0f}  {left}s left")
                     if LIVE:
                         o = client.create_order(OrderArgs(token_id=tok, price=entry, size=SIZE, side=BUY))
                         resp = client.post_order(o, OrderType.GTC, post_only=True)
@@ -300,10 +360,18 @@ def trade_window(coin, m):
                 tok = m["tokens"][side_idx]
                 bid, ask = books[side_idx]
                 was = held
-                if LIVE and order_id:
+                if LIVE and order_id and time.time() - checked >= 1:  # once a second: stay under rate limits
+                    checked = time.time()
                     held = float(client.get_order(order_id).get("size_matched", 0))
+                elif not LIVE and time.time() < lands:
+                    feed.take_sells(tok)  # trades before our order lands can't fill it
                 elif not LIVE:
-                    ahead, filled = sim_fill(entry, ahead, feed.take_sells(tok), feed.level(tok, entry))
+                    lvl = feed.level(tok, entry)
+                    if ahead is None:  # just landed: join the back of the queue as it is now
+                        ahead, prev = lvl, lvl
+                        feed.take_sells(tok)
+                    ahead, filled = sim_fill(entry, ahead, feed.take_sells(tok), lvl, prev)
+                    prev = lvl
                     if ask <= entry:  # a seller resting at our price means our level was cleared
                         filled = SIZE
                     held = min(SIZE, held + filled)
@@ -325,13 +393,15 @@ def trade_window(coin, m):
                     log(m["slug"], m["outcomes"][side_idx], entry, bid, held, "stop")
                     stopped = True
                     break
-            time.sleep(POLL)
+            feed.changed.wait(POLL)
     finally:
         feed.close()
         if LIVE and order_id and not stopped:
             client.cancel(order_id)  # drop any unfilled remainder
+        if side_idx is not None and not LIVE:
+            bump("balance", entry * (SIZE - held))  # unfilled part of the bid frees its money
 
-    if side_idx is not None and not held:
+    if side_idx is not None and not held and not halt.is_set():
         log(m["slug"], m["outcomes"][side_idx], entry, "", 0, "nofill")  # bid never filled: no trade
     if held and not stopped:
         with lock:
@@ -361,28 +431,47 @@ def coin_loop(key):
 
 def run():
     print(f"mode={state['mode']} series={len(SERIES)} ({COINS} x {list(SPANS)}) entry={ENTRY_MIN}-{ENTRY_MAX} last {ENTRY_WINDOW}s stop={STOP} "
-          f"steady={STEADY} size={SIZE} max_losses={MAX_LOSSES}")
+          f"steady={STEADY} size={SIZE} latency={LATENCY} max_losses={MAX_LOSSES} max_loss_usd={MAX_LOSS_USD}")
+    try:
+        geo = requests.get("https://polymarket.com/api/geoblock", timeout=5).json()
+        print(f"geoblock {'BLOCKED' if geo.get('blocked') else 'ok'} ({geo.get('country')})")
+        if geo.get("blocked") and LIVE:
+            sys.exit("this server's country is blocked by Polymarket; not trading live")
+    except (requests.RequestException, ValueError) as e:
+        print(f"geoblock check failed: {e!r}")
     serve_dashboard()
-    try:  # positions still waiting for a result survive restarts
-        state["pending"] = json.load(open("status.json")).get("pending", [])
+    try:  # positions still waiting for a result (and the dry-run money tied up in them) survive restarts
+        saved = json.load(open("status.json"))
+        state["pending"] = saved.get("pending", [])
+        if not LIVE:
+            state["balance"] = saved.get("balance", BALANCE)
         print(f"restored {len(state['pending'])} pending positions")
     except (OSError, ValueError):
         pass
+    if LIVE:
+        state["balance"] = live_balance()
+    print(f"balance {state['balance']:.2f} USDC")
+    signal.signal(signal.SIGTERM, lambda *a: halt.set())  # systemctl stop: windows exit and cancel their orders
     state["status"] = "running"
     threads = [threading.Thread(target=coin_loop, args=(k,), daemon=True) for k in SERIES]
     for t in threads:
         t.start()
     last_settle = 0
-    while state["losses"] < MAX_LOSSES:
+    while keep_running(state["losses"], state["pnl"]) and not halt.is_set():
         if time.time() - last_settle > 30:
             settle_pending()
+            if LIVE:
+                state["balance"] = live_balance()
             last_settle = time.time()
         save_state()
         time.sleep(0.5)
+    stopped_by_us = halt.is_set()
     halt.set()
     for t in threads:
         t.join(timeout=10)
-    state["status"] = f"KILL SWITCH: {state['losses']} losses"
+    if LIVE:
+        client.cancel_all()  # nothing of ours may stay on the book
+    state["status"] = "stopped" if stopped_by_us else f"KILL SWITCH: {state['losses']} losses, pnl {state['pnl']:+.2f}"
     save_state()
     print(f"{state['status']}. Final pnl {state['pnl']:+.2f}")
 
@@ -401,13 +490,29 @@ def test():
     assert entry_price(0.999, 1.0, 30) == 0.99
     assert entry_price(0.98, 0.99, 250) is None   # 0.99 bid would cross the ask = taker
     assert entry_price(0.97, 1.0, 250) is None
+    assert entry_price(0.99, 1.0, NO_NEW_BIDS - 1) is None   # too late for a new bid
     assert not steady(None, 100) and not steady(100, 100 + STEADY - 1) and steady(100, 100 + STEADY)
     # queue: 100 ahead, a 60 sell leaves 40 ahead; a 50 sell then fills 10 of ours
-    assert sim_fill(0.99, 100, [(0.99, 60)], 500) == (40, 0)
-    assert sim_fill(0.99, 40, [(0.99, 50)], 500) == (0, 10)
-    assert sim_fill(0.99, 100, [(0.98, 1)], 500)[1] == float("inf")
-    assert sim_fill(0.99, 100, [], 30) == (30, 0)   # cancels shrink the queue
-    assert sim_fill(0.99, 100, [(1.0, 999)], 500) == (100, 0)  # sells above our price don't touch us
+    assert sim_fill(0.99, 100, [(0.99, 60)], 440, 500) == (40, 0)
+    assert sim_fill(0.99, 40, [(0.99, 50)], 440, 490) == (0, 10)
+    assert sim_fill(0.99, 100, [(0.98, 1)], 500, 500)[1] == float("inf")
+    assert sim_fill(0.99, 100, [], 250, 500) == (50, 0)    # half the level cancelled: half of those were ahead of us
+    assert sim_fill(0.99, 100, [], 900, 500) == (100, 0)   # people joining behind us change nothing
+    assert sim_fill(0.99, 100, [(1.0, 999)], 500, 500) == (100, 0)  # sells above our price don't touch us
+    # a buy of the other token at 0.01 is a 0.99 sell into our bid
+    f = Feed.__new__(Feed)
+    f.books, f.sells, f.other = {"U": ({}, {}), "D": ({}, {})}, {"U": [], "D": []}, {"U": "D", "D": "U"}
+    f.lock, f.changed, f.last = threading.Lock(), threading.Event(), 0.0
+    f.on_message(None, json.dumps({"event_type": "last_trade_price", "asset_id": "D", "price": "0.01", "size": "7", "side": "BUY"}))
+    assert f.sells["U"] == [(0.99, 7.0)] and f.changed.is_set()
+    # at most MAX_SAME_WAY open fills on one direction
+    coins = {k: {"position": {"side": "Down", "held": 10}} for k in "abc"} | {"d": {"position": None}}
+    assert same_way(coins, "Down") == 3 and same_way(coins, "Up") == 0
+    # money: a bid locks its cost; not enough money = no bid
+    state["balance"] = 15.0
+    assert reserve(9.9) and state["balance"] == 5.1 and not reserve(9.9)
+    state["balance"] = BALANCE
+    assert keep_running(0, 0) and not keep_running(MAX_LOSSES, 0) and not keep_running(1, -MAX_LOSS_USD)
     print("ok")
 
 

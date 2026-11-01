@@ -20,6 +20,8 @@
   th, td { text-align:left; padding:6px 8px; border-bottom:1px solid var(--line); white-space:nowrap; }
   th { color:var(--mute); font-weight:500; font-size:12px; }
   .scroll { overflow-x:auto; }
+  #tradesbox { max-height:calc(50 * 31px + 32px); overflow-y:auto; }  /* ~50 rows, then scroll */
+  #tradesbox th { position:sticky; top:0; background:var(--card); }
   .stale { color:var(--down); font-weight:600; }
 </style>
 </head>
@@ -52,10 +54,10 @@
     <tbody id="bycoin"></tbody></table>
   </div>
 
-  <div class="card scroll">
+  <div class="card">
     <div class="k" style="margin-bottom:6px">Trades (newest first)</div>
-    <table><thead><tr><th>Time</th><th>Market</th><th>Side</th><th>Entry</th><th>Exit</th><th>Size</th><th>P&amp;L</th><th>Result</th></tr></thead>
-    <tbody id="trades"></tbody></table>
+    <div class="scroll" id="tradesbox"><table><thead><tr><th>Time</th><th>Market</th><th>Side</th><th>Entry</th><th>Exit</th><th>Size</th><th>P&amp;L</th><th>Result</th></tr></thead>
+    <tbody id="trades"></tbody></table></div>
   </div>
 </main>
 <script>

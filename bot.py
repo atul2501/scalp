@@ -21,7 +21,7 @@ COINS = [c for c in COINS if c]
 SPANS = {s: ALL_SPANS[s] for s in os.getenv("SPANS", "5m,15m,1h,4h").replace(" ", ",").split(",") if s}
 SERIES = [f"{c}-{s}" for s in SPANS for c in COINS]   # e.g. "btc-5m", one thread each
 HOURLY_NAME = {"btc": "bitcoin", "eth": "ethereum", "sol": "solana", "doge": "dogecoin", "xrp": "xrp", "bnb": "bnb"}
-ENTRY_MIN = 0.98    # side's best bid must be at least this before we join...
+ENTRY_MIN = float(os.getenv("MIN_PRICE", "0.98"))  # side's best bid must be at least this before we join...
 ENTRY_MAX = float(os.getenv("BID", "0.99"))  # ...and we always bid exactly this (maker, front of the queue if early)
 ENTRY_WINDOW = 3600  # enter any time in the last N seconds; >= window length = join as early as possible
 STOP = None         # hold to the end: every stop so far (0.90 and 0.30) sold a side that went on to win

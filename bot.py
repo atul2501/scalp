@@ -14,7 +14,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 COINS = ["btc", "eth", "sol", "doge", "xrp", "bnb"]  # hype also exists but its book is too thin
-SPANS = {"5m": 300, "15m": 900, "1h": 3600}           # every coin trades each of these windows
+SPANS = {"5m": 300, "15m": 900, "1h": 3600, "4h": 14400}  # every coin trades each of these windows
 SERIES = [f"{c}-{s}" for s in SPANS for c in COINS]   # e.g. "btc-5m", one thread each
 HOURLY_NAME = {"btc": "bitcoin", "eth": "ethereum", "sol": "solana", "doge": "dogecoin", "xrp": "xrp", "bnb": "bnb"}
 ENTRY_MIN = 0.98    # side's best bid must be at least this before we join...
@@ -63,6 +63,10 @@ def save_state():
 
 
 def slug_for(coin, span, ts):
+    if span == "4h":  # 4-hour windows start at 0/4/8/12/16/20 New York time
+        et = datetime.fromtimestamp(int(ts), ZoneInfo("America/New_York"))
+        start = int(et.replace(hour=et.hour // 4 * 4, minute=0, second=0, microsecond=0).timestamp())
+        return f"{coin}-updown-4h-{start}"
     start = int(ts) // SPANS[span] * SPANS[span]
     if span != "1h":
         return f"{coin}-updown-{span}-{start}"
@@ -349,6 +353,11 @@ def run():
     print(f"mode={state['mode']} series={len(SERIES)} ({COINS} x {list(SPANS)}) entry={ENTRY_MIN}-{ENTRY_MAX} last {ENTRY_WINDOW}s stop={STOP} "
           f"size={SIZE} max_losses={MAX_LOSSES}")
     serve_dashboard()
+    try:  # positions still waiting for a result survive restarts
+        state["pending"] = json.load(open("status.json")).get("pending", [])
+        print(f"restored {len(state['pending'])} pending positions")
+    except (OSError, ValueError):
+        pass
     state["status"] = "running"
     threads = [threading.Thread(target=coin_loop, args=(k,), daemon=True) for k in SERIES]
     for t in threads:
@@ -372,6 +381,8 @@ def test():
     assert slug_for("btc", "5m", 1793473899) == "btc-updown-5m-1793473800"
     assert slug_for("eth", "15m", 1793474000) == "eth-updown-15m-1793473200"
     assert slug_for("btc", "1h", 1793504900) == "bitcoin-up-or-down-october-31-2026-11pm-et"
+    assert slug_for("sol", "4h", 1793504900) == "sol-updown-4h-1793491200"   # 8PM-12AM EDT
+    assert slug_for("btc", "4h", 1793530000) == "btc-updown-4h-1793523600"   # 4AM-8AM EST, after the clock change
     assert pnl(0.99, 1.0, 10) == 0.1
     assert pnl(0.99, 0.90, 10) == -0.9
     assert pnl(0.95, 0.0, 10) == -9.5

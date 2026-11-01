@@ -92,7 +92,7 @@ async function tick() {
       const m = c.market, p = c.position;
       const books = m ? m.outcomes.map((o, i) => `<div><span class="k">${o}</span> <b>${m.books[i][0].toFixed(3)}</b> / ${m.books[i][1].toFixed(3)}</div>`).join('') : '<div class="k">waiting for market…</div>';
       const pos = p ? `${p.side} @ ${p.entry} · ${p.status} · held ${p.held}` + (p.status === 'bidding' ? ` · ${Math.round(p.ahead)} ahead` : '') : 'no position';
-      return `<div class="card"><div style="display:flex;justify-content:space-between"><b>${coin.replace('-', ' ').toUpperCase()}</b><span class="k">${m ? m.seconds_left + 's left' : ''}</span></div>${books}<div class="k" style="margin-top:6px">${pos}</div></div>`;
+      return `<div class="card"><div style="display:flex;justify-content:space-between"><b>${coin.replace('-', ' ').toUpperCase()}</b><span class="k">${m ? (m.seconds_left > 0 ? m.seconds_left + 's left' : 'ended, bidding window') + (m.p_up != null ? ` · Up ${(100 * m.p_up).toFixed(1)}%` : '') : ''}</span></div>${books}<div class="k" style="margin-top:6px">${pos}</div></div>`;
     }).join('');
   } catch (e) { $('sub').innerHTML = '<span class="stale">status.json not found — is bot.py running?</span>'; }
 

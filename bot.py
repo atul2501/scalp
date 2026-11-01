@@ -20,7 +20,8 @@ HOURLY_NAME = {"btc": "bitcoin", "eth": "ethereum", "sol": "solana", "doge": "do
 ENTRY_MIN = 0.98    # side's best bid must be at least this before we join...
 ENTRY_MAX = 0.99    # ...and we always bid exactly this (maker, front of the queue if early)
 ENTRY_WINDOW = 3600  # enter any time in the last N seconds; >= window length = join as early as possible
-STOP = 0.30         # emergency only: 0.90 sold dips that recovered; None = no stop
+STOP = None         # hold to the end: every stop so far (0.90 and 0.30) sold a side that went on to win
+STEADY = 20         # side must hold >= ENTRY_MIN this many seconds before we bid (late jumps = close markets)
 SIZE = 10           # shares (market min is 5)
 MAX_LOSSES = 5
 POLL = 0.2
@@ -41,7 +42,7 @@ if LIVE:
     client.set_api_creds(client.create_or_derive_api_creds())
 
 state = {"mode": "LIVE" if LIVE else "DRY-RUN", "started": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-         "config": {"entry": f"{ENTRY_MIN}-{ENTRY_MAX}", "window": ENTRY_WINDOW, "stop": STOP, "size": SIZE,
+         "config": {"entry": f"{ENTRY_MIN}-{ENTRY_MAX}", "window": ENTRY_WINDOW, "stop": STOP, "steady": STEADY, "size": SIZE,
                     "max_losses": MAX_LOSSES},
          "wins": 0, "losses": 0, "pnl": 0.0, "windows": 0, "bids": 0, "fills": 0, "net_errors": 0,
          "coins": {k: {"market": None, "position": None} for k in SERIES}, "pending": [], "status": "starting"}
@@ -87,6 +88,11 @@ def entry_price(bid, ask, left):
         return None
     p = ENTRY_MAX
     return p if ask > p else None  # ask above us, so the bid rests = maker
+
+
+def steady(since, now):
+    """True once the side's bid has stayed >= ENTRY_MIN for STEADY seconds."""
+    return since is not None and now - since >= STEADY
 
 
 def sim_fill(price, ahead, sells, level):
@@ -261,6 +267,7 @@ def trade_window(coin, m):
     feed = Feed(m["tokens"])
     order_id, side_idx, entry, held, ahead = None, None, None, 0.0, 0.0
     stopped = False
+    since = [None] * len(m["tokens"])  # when each side's bid last reached ENTRY_MIN
     try:
         while time.time() < m["end"] and not halt.is_set():
             books = [feed.top(t) for t in m["tokens"]]
@@ -268,9 +275,11 @@ def trade_window(coin, m):
             view["market"] = {"slug": m["slug"], "outcomes": m["outcomes"], "books": books, "seconds_left": left}
 
             if side_idx is None:
+                now = time.time()
                 for i, (bid, ask) in enumerate(books):
+                    since[i] = (since[i] or now) if bid >= ENTRY_MIN else None
                     entry = entry_price(bid, ask, left)
-                    if entry is None:
+                    if entry is None or not steady(since[i], now):
                         continue
                     side_idx, tok = i, m["tokens"][i]
                     ahead = feed.level(tok, entry)
@@ -352,7 +361,7 @@ def coin_loop(key):
 
 def run():
     print(f"mode={state['mode']} series={len(SERIES)} ({COINS} x {list(SPANS)}) entry={ENTRY_MIN}-{ENTRY_MAX} last {ENTRY_WINDOW}s stop={STOP} "
-          f"size={SIZE} max_losses={MAX_LOSSES}")
+          f"steady={STEADY} size={SIZE} max_losses={MAX_LOSSES}")
     serve_dashboard()
     try:  # positions still waiting for a result survive restarts
         state["pending"] = json.load(open("status.json")).get("pending", [])
@@ -392,6 +401,7 @@ def test():
     assert entry_price(0.999, 1.0, 30) == 0.99
     assert entry_price(0.98, 0.99, 250) is None   # 0.99 bid would cross the ask = taker
     assert entry_price(0.97, 1.0, 250) is None
+    assert not steady(None, 100) and not steady(100, 100 + STEADY - 1) and steady(100, 100 + STEADY)
     # queue: 100 ahead, a 60 sell leaves 40 ahead; a 50 sell then fills 10 of ours
     assert sim_fill(0.99, 100, [(0.99, 60)], 500) == (40, 0)
     assert sim_fill(0.99, 40, [(0.99, 50)], 500) == (0, 10)

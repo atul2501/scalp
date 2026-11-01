@@ -21,7 +21,8 @@
   th { color:var(--mute); font-weight:500; font-size:12px; }
   .scroll { overflow-x:auto; }
   #tradesbox { max-height:calc(50 * 31px + 32px); overflow-y:auto; }  /* ~50 rows, then scroll */
-  #tradesbox th { position:sticky; top:0; background:var(--card); }
+  #errbox { max-height:calc(8 * 31px + 32px); overflow-y:auto; }
+  #errbox th, #tradesbox th { position:sticky; top:0; background:var(--card); }
   .stale { color:var(--down); font-weight:600; }
 </style>
 </head>
@@ -54,6 +55,12 @@
     <tbody id="bycoin"></tbody></table>
   </div>
 
+  <div class="card" style="margin-bottom:14px">
+    <div class="k" style="margin-bottom:6px">Error log (newest first, last 100)</div>
+    <div class="scroll" id="errbox"><table><thead><tr><th>Time</th><th>Where</th><th>What</th></tr></thead>
+    <tbody id="errors"></tbody></table></div>
+  </div>
+
   <div class="card">
     <div class="k" style="margin-bottom:6px">Trades (newest first)</div>
     <div class="scroll" id="tradesbox"><table><thead><tr><th>Time</th><th>Market</th><th>Side</th><th>Entry</th><th>Exit</th><th>Size</th><th>P&amp;L</th><th>Result</th></tr></thead>
@@ -70,6 +77,7 @@ const series = slug => {
   const coin = {bitcoin: 'btc', ethereum: 'eth', solana: 'sol', dogecoin: 'doge'}[p[0]] ?? p[0];
   return `${coin.toUpperCase()} 1h`;
 };
+const esc = t => String(t).replace(/[&<>"]/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;'})[c]);
 const cls = n => n > 0 ? 'pos' : n < 0 ? 'neg' : '';
 
 async function tick() {
@@ -86,6 +94,9 @@ async function tick() {
     $('wr').textContent = done ? (100 * s.wins / done).toFixed(1) + '%' : '–';
     $('wbf').textContent = `${s.windows} / ${s.bids} / ${s.fills}`;
     $('pend').textContent = s.pending.length;
+    $('errors').innerHTML = (s.errors || []).slice().reverse()
+      .map(e => `<tr><td>${fmt(e.time)}</td><td>${esc(e.where)}</td><td class="neg">${esc(e.what)}</td></tr>`).join('')
+      || '<tr><td colspan="3" class="k">no errors</td></tr>';
     $('bal').textContent = s.balance == null ? '–' : s.balance.toFixed(2);
     // money tied up at cost: open bids (dry run locks the full bid; live only spends on fills) + filled shares
     const locked = Object.values(s.coins).filter(c => c.position)

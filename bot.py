@@ -53,7 +53,7 @@ if LIVE:
 state = {"mode": "LIVE" if LIVE else "DRY-RUN", "started": datetime.now(timezone.utc).isoformat(timespec="seconds"),
          "config": {"entry": f"{ENTRY_MIN}-{ENTRY_MAX}", "window": ENTRY_WINDOW, "stop": STOP, "steady": STEADY, "size": SIZE,
                     "max_losses": MAX_LOSSES, "max_loss_usd": MAX_LOSS_USD, "latency": LATENCY},
-         "wins": 0, "losses": 0, "pnl": 0.0, "balance": BALANCE, "windows": 0, "bids": 0, "fills": 0, "net_errors": 0,
+         "wins": 0, "losses": 0, "pnl": 0.0, "balance": BALANCE, "windows": 0, "bids": 0, "fills": 0, "net_errors": 0, "errors": [],
          "coins": {k: {"market": None, "position": None} for k in SERIES}, "pending": [], "status": "starting"}
 lock = threading.Lock()     # guards counters, pending, trades.csv and status.json
 halt = threading.Event()    # kill switch: coin threads finish their window and exit
@@ -62,6 +62,15 @@ halt = threading.Event()    # kill switch: coin threads finish their window and 
 def bump(key, n=1):
     with lock:
         state[key] = round(state[key] + n, 4)
+
+
+def error(where, what):
+    """Count a problem, print it, and keep the last 100 for the dashboard's error log."""
+    print(f"  ERROR {where}: {what}")
+    with lock:
+        state["net_errors"] += 1
+        state["errors"] = (state["errors"] + [{"time": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                                               "where": where, "what": what}])[-100:]
 
 
 def save_state():
@@ -156,8 +165,7 @@ def get(url, **params):
             return requests.get(url, params=params, timeout=5).json()
         except (requests.RequestException, ValueError) as e:
             attempt += 1
-            bump("net_errors")
-            print(f"  net error ({type(e).__name__}), retry {attempt}")
+            error(url.split("/")[2], f"{type(e).__name__}, retry {attempt}")
             time.sleep(min(attempt, 10))
 
 
@@ -179,7 +187,8 @@ def levels(rows):
 class Feed:
     """Live order books and trades for one market over the CLOB websocket, REST fallback when quiet."""
 
-    def __init__(self, tokens):
+    def __init__(self, tokens, label=""):
+        self.label = label
         self.books = {t: ({}, {}) for t in tokens}
         self.sells = {t: [] for t in tokens}
         self.other = {tokens[0]: tokens[1], tokens[1]: tokens[0]}
@@ -196,8 +205,7 @@ class Feed:
         while self.alive:
             self.ws.run_forever(ping_interval=10, ping_timeout=5)
             if self.alive:  # Polymarket dropped the feed: say so and reconnect quickly (books stay as last seen)
-                bump("net_errors")
-                print(f"  feed reconnect (websocket dropped) {time.strftime('%H:%M:%S')}")
+                error(self.label, "price feed dropped, reconnected")
                 time.sleep(0.3)
 
     def close(self):
@@ -322,7 +330,7 @@ def serve_dashboard():
 def trade_window(coin, m):
     """Run one 5-min window for one coin. Leaves a filled-and-unstopped position in state['pending']."""
     view = state["coins"][coin]
-    feed = Feed(m["tokens"])
+    feed = Feed(m["tokens"], m["slug"])
     order_id, side_idx, entry, held, ahead, prev = None, None, None, 0.0, None, 0.0
     stopped = False
     since = [None] * len(m["tokens"])  # when each side's bid last reached ENTRY_MIN
@@ -373,7 +381,7 @@ def trade_window(coin, m):
                         resp = client.post_order(o, OrderType.GTC, post_only=True)
                         order_id = resp.get("orderID")
                         if not order_id:
-                            print(f"  rejected: {resp}")
+                            error(m["slug"], f"order rejected: {resp}")
                     break
 
             elif held < SIZE:  # waiting on (more) fill
@@ -448,7 +456,7 @@ def coin_loop(key):
             trade_window(key, m)
             halt.wait(max(0, m["end"] - time.time()) + 1)  # one entry per window
         except Exception as e:  # one coin's bad window must not kill the others
-            print(f"  {coin} error: {e!r}")
+            error(key, repr(e))
             time.sleep(5)
 
 
@@ -468,7 +476,7 @@ def run():
         state["pending"] = saved.get("pending", [])
         if not LIVE:
             state["balance"] = saved.get("balance", BALANCE)
-        for k in ("started", "wins", "losses", "pnl", "windows", "bids", "fills", "net_errors"):  # totals carry on
+        for k in ("started", "wins", "losses", "pnl", "windows", "bids", "fills", "net_errors", "errors"):  # totals carry on
             state[k] = saved.get(k, state[k])
         print(f"restored {len(state['pending'])} pending positions")
     except (OSError, ValueError):
@@ -528,6 +536,9 @@ def test():
     f = Feed.__new__(Feed)
     f.books, f.sells, f.other = {"U": ({}, {}), "D": ({}, {})}, {"U": [], "D": []}, {"U": "D", "D": "U"}
     f.lock, f.changed, f.last = threading.Lock(), threading.Event(), 0.0
+    error("test", "x")
+    assert state["errors"][-1]["what"] == "x" and state["net_errors"] == 1
+    state["errors"], state["net_errors"] = [], 0
     f.on_message(None, json.dumps({"event_type": "last_trade_price", "asset_id": "D", "price": "0.01", "size": "7", "side": "BUY"}))
     assert f.sells["U"] == [(0.99, 7.0)] and f.changed.is_set()
     # at most MAX_SAME_WAY open fills on one direction

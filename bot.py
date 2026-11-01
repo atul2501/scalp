@@ -29,7 +29,7 @@ STEADY = 20         # side must hold >= ENTRY_MIN this many seconds before we bi
 NO_NEW_BIDS = 10    # no new bids in the last N seconds (prices swing, fills are worst)
 SIZE = int(os.getenv("SIZE", "10"))  # shares (market min is 5)
 BALANCE = float(os.getenv("BALANCE", "100"))  # dry-run play money; live reads the real USDC balance
-LATENCY = 0.07      # dry-run: our order lands this long after we decide (measured ~65 ms Stockholm -> CLOB)
+LATENCY = float(os.getenv("LATENCY", "0.07"))  # dry-run order delay: ~65 ms measured from Stockholm, ~38 ms from Ireland
 MAX_SAME_WAY = 3    # at most this many open fills needing the same direction (Up or Down) at once
 MAX_LOSSES = 5
 MAX_LOSS_USD = 20   # also stop once P&L since start reaches -$20

@@ -338,6 +338,7 @@ def coin_loop(key):
         try:
             m = get_market(slug_for(coin, span, time.time()))
             if not m or m["end"] <= time.time():
+                state["coins"][key]["market"] = None  # Polymarket lists no window right now (e.g. clock-change night)
                 time.sleep(5)
                 continue
             bump("windows")

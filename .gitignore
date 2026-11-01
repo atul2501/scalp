@@ -1,0 +1,8 @@
+.venv/
+.env
+status.json
+status.json.tmp
+bot.log
+__pycache__/
+research_out/
+trades*.csv

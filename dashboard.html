@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Scalp Bot</title>
+<style>
+  :root { --bg:#f7f7f5; --card:#fff; --fg:#1b1b1b; --mute:#6b6b6b; --line:#e4e4e0; --up:#13804b; --down:#c0392b; --warn:#b7791f; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#121212; --card:#1c1c1c; --fg:#ececec; --mute:#9a9a9a; --line:#2c2c2c; --up:#3ccf86; --down:#ff6b5b; --warn:#f0b450; } }
+  * { box-sizing:border-box; }
+  body { margin:0; padding:20px 16px; background:var(--bg); color:var(--fg); font:14px/1.45 -apple-system,system-ui,sans-serif; }
+  main { max-width:1000px; margin:0 auto; }
+  h1 { font-size:20px; margin:0 0 4px; } .sub { color:var(--mute); margin-bottom:16px; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(140px,1fr)); gap:10px; margin-bottom:14px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:12px 14px; }
+  .k { color:var(--mute); font-size:12px; } .v { font-size:22px; font-weight:600; font-variant-numeric:tabular-nums; }
+  .pos { color:var(--up); } .neg { color:var(--down); } .warn { color:var(--warn); }
+  .books { display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-bottom:14px; }
+  table { width:100%; border-collapse:collapse; font-variant-numeric:tabular-nums; }
+  th, td { text-align:left; padding:6px 8px; border-bottom:1px solid var(--line); white-space:nowrap; }
+  th { color:var(--mute); font-weight:500; font-size:12px; }
+  .scroll { overflow-x:auto; }
+  .stale { color:var(--down); font-weight:600; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Scalp Bot <span id="mode" class="k"></span></h1>
+  <div class="sub" id="sub">loading…</div>
+
+  <div class="grid">
+    <div class="card"><div class="k">P&amp;L ($)</div><div class="v" id="pnl">–</div></div>
+    <div class="card"><div class="k">Wins / Losses</div><div class="v" id="wl">–</div></div>
+    <div class="card"><div class="k">Win rate</div><div class="v" id="wr">–</div></div>
+    <div class="card"><div class="k">Windows / Bids / Fills</div><div class="v" id="wbf">–</div></div>
+    <div class="card"><div class="k">Pending settle</div><div class="v" id="pend">–</div></div>
+  </div>
+
+  <div class="card scroll" style="margin-bottom:14px">
+    <div class="k" style="margin-bottom:6px">Open positions (filled, waiting for result)</div>
+    <table><thead><tr><th>Market</th><th>Side</th><th>Entry</th><th>Shares</th><th>Status</th></tr></thead>
+    <tbody id="open"></tbody></table>
+  </div>
+
+  <div class="grid" id="coins" style="grid-template-columns:repeat(auto-fit,minmax(220px,1fr))"></div>
+
+  <div class="card scroll" style="margin-bottom:14px">
+    <div class="k" style="margin-bottom:6px">Results by coin &amp; window</div>
+    <table><thead><tr><th>Coin</th><th>Bids</th><th>Fills</th><th>Fill %</th><th>Wins</th><th>Stops / Losses</th><th>P&amp;L</th></tr></thead>
+    <tbody id="bycoin"></tbody></table>
+  </div>
+
+  <div class="card scroll">
+    <div class="k" style="margin-bottom:6px">Trades (newest first)</div>
+    <table><thead><tr><th>Time</th><th>Market</th><th>Side</th><th>Entry</th><th>Exit</th><th>Size</th><th>P&amp;L</th><th>Result</th></tr></thead>
+    <tbody id="trades"></tbody></table>
+  </div>
+</main>
+<script>
+const $ = id => document.getElementById(id);
+const fmt = t => new Date(t).toLocaleString();
+// "btc-updown-15m-…" -> "BTC 15m", "bitcoin-up-or-down-…-et" -> "BTC 1h"
+const series = slug => {
+  const p = slug.split('-');
+  if (p[1] === 'updown') return `${p[0].toUpperCase()} ${p[2]}`;
+  const coin = {bitcoin: 'btc', ethereum: 'eth', solana: 'sol', dogecoin: 'doge'}[p[0]] ?? p[0];
+  return `${coin.toUpperCase()} 1h`;
+};
+const cls = n => n > 0 ? 'pos' : n < 0 ? 'neg' : '';
+
+async function tick() {
+  try {
+    const s = await (await fetch('status.json?' + Date.now())).json();
+    const age = (Date.now() - new Date(s.updated)) / 1000;
+    $('mode').textContent = s.mode;
+    $('sub').innerHTML = `${s.status} · started ${fmt(s.started)} · updated ${Math.round(age)}s ago`
+      + (age > 30 ? ' <span class="stale">(bot not updating)</span>' : '')
+      + ` · entry ${s.config.entry} stop ${s.config.stop ?? 'none (hold)'} size ${s.config.size} · net errors ${s.net_errors}`;
+    $('pnl').textContent = (s.pnl >= 0 ? '+' : '') + s.pnl.toFixed(2); $('pnl').className = 'v ' + cls(s.pnl);
+    $('wl').innerHTML = `${s.wins} / <span class="${s.losses ? 'neg' : ''}">${s.losses}</span><span class="k"> of ${s.config.max_losses}</span>`;
+    const done = s.wins + s.losses;
+    $('wr').textContent = done ? (100 * s.wins / done).toFixed(1) + '%' : '–';
+    $('wbf').textContent = `${s.windows} / ${s.bids} / ${s.fills}`;
+    $('pend').textContent = s.pending.length;
+    const open = Object.entries(s.coins).filter(([, c]) => c.position && c.position.held > 0)
+      .map(([k, c]) => [k.replace('-', ' ').toUpperCase(), c.position.side, c.position.entry, c.position.held,
+        `in window · ${c.market ? c.market.seconds_left : '?'}s left · bid ${c.market ? c.market.books[c.market.outcomes.indexOf(c.position.side)][0].toFixed(3) : '?'}`])
+      .concat(s.pending.map(p => [series(p.slug), p.side, p.entry, p.held, 'window closed · waiting for Polymarket result']));
+    $('open').innerHTML = open.map(r => `<tr><td><b>${r[0]}</b></td><td>${r[1]}</td><td>${r[2]}</td><td>${r[3]}</td><td class="k">${r[4]}</td></tr>`).join('')
+      || '<tr><td colspan="5" class="k">none</td></tr>';
+    $('coins').innerHTML = Object.entries(s.coins).map(([coin, c]) => {
+      const m = c.market, p = c.position;
+      const books = m ? m.outcomes.map((o, i) => `<div><span class="k">${o}</span> <b>${m.books[i][0].toFixed(3)}</b> / ${m.books[i][1].toFixed(3)}</div>`).join('') : '<div class="k">waiting for market…</div>';
+      const pos = p ? `${p.side} @ ${p.entry} · ${p.status} · held ${p.held}` + (p.status === 'bidding' ? ` · ${Math.round(p.ahead)} ahead` : '') : 'no position';
+      return `<div class="card"><div style="display:flex;justify-content:space-between"><b>${coin.replace('-', ' ').toUpperCase()}</b><span class="k">${m ? m.seconds_left + 's left' : ''}</span></div>${books}<div class="k" style="margin-top:6px">${pos}</div></div>`;
+    }).join('');
+  } catch (e) { $('sub').innerHTML = '<span class="stale">status.json not found — is bot.py running?</span>'; }
+
+  try {
+    const txt = await (await fetch('trades.csv?' + Date.now())).text();
+    const rows = txt.trim().split('\n').slice(1).map(r => r.split(',')).sort((a, b) => new Date(b[0]) - new Date(a[0]));
+    const by = {};
+    for (const r of rows) {
+      const c = series(r[1]), b = by[c] ??= {bids: 0, fills: 0, wins: 0, bad: 0, pnl: 0};
+      if (r[7] === 'nofill') b.bids++;
+      if (r[7] === 'win' || r[7] === 'stop' || r[7] === 'loss') { b.bids++; b.fills++; b.pnl += parseFloat(r[6]); }
+      if (r[7] === 'win') b.wins++;
+      if (r[7] === 'stop' || r[7] === 'loss') b.bad++;
+    }
+    $('bycoin').innerHTML = Object.entries(by).map(([c, b]) =>
+      `<tr><td><b>${c}</b></td><td>${b.bids}</td><td>${b.fills}</td><td>${b.bids ? (100 * b.fills / b.bids).toFixed(0) : 0}%</td><td class="pos">${b.wins}</td><td class="${b.bad ? 'neg' : ''}">${b.bad}</td><td class="${cls(b.pnl)}">${b.pnl.toFixed(2)}</td></tr>`
+    ).join('') || '<tr><td colspan="7" class="k">no trades yet</td></tr>';
+    $('trades').innerHTML = rows.map(r => {
+      const p = parseFloat(r[6]);
+      if (r[7] === 'nofill')
+        return `<tr class="k"><td>${fmt(r[0])}</td><td>${series(r[1])}</td><td>${r[2]}</td><td>bid ${r[3]}</td><td>–</td><td>0</td><td>–</td><td>no fill (no trade)</td></tr>`;
+      const rc = r[7] === 'win' ? 'pos' : (r[7] === 'loss' || r[7] === 'stop') ? 'neg' : 'k';
+      return `<tr><td>${fmt(r[0])}</td><td>${series(r[1])}</td><td>${r[2]}</td><td>${r[3]}</td><td>${r[4]}</td><td>${r[5]}</td><td class="${cls(p)}">${p.toFixed(2)}</td><td class="${rc}">${r[7]}</td></tr>`;
+    }).join('') || '<tr><td colspan="8" class="k">no trades yet</td></tr>';
+  } catch (e) {}
+}
+tick(); setInterval(tick, 2000);
+</script>
+</body>
+</html>

@@ -270,6 +270,16 @@ def log(slug, side, entry, exit_, size, reason, when=None):
         bump("losses")
 
 
+def log_skip(slug, side, left, why):
+    with lock:
+        new = not os.path.exists("skipped.csv")
+        with open("skipped.csv", "a", newline="") as f:
+            w = csv.writer(f)
+            if new:
+                w.writerow(["time", "slug", "side", "left_when_biddable", "why"])
+            w.writerow([datetime.now(timezone.utc).isoformat(timespec="seconds"), slug, side, left, why])
+
+
 def settle_pending():
     """Check held positions from finished windows; Gamma marks the winner some minutes after close."""
     for p in list(state["pending"]):
@@ -316,6 +326,8 @@ def trade_window(coin, m):
     stopped = False
     since = [None] * len(m["tokens"])  # when each side's bid last reached ENTRY_MIN
     lands = checked = 0.0  # dry-run: when our order reaches the book; live: last fill check
+    skipped = [None] * len(m["tokens"])  # [seconds left when first biddable, why not bid] per side
+    signed = [None] * len(m["tokens"])   # live: order signed ahead of time, sent the moment the rules allow
     if LIVE:
         for t in m["tokens"]:  # cached by the client, so posting the order needs no extra requests
             client.get_tick_size(t)
@@ -332,11 +344,18 @@ def trade_window(coin, m):
                 for i, (bid, ask) in enumerate(books):
                     since[i] = (since[i] or now) if bid >= ENTRY_MIN else None
                     entry = entry_price(bid, ask, left)
-                    if entry is None or not steady(since[i], now):
+                    if entry is None:
+                        continue
+                    skipped[i] = skipped[i] or [left, "unsteady"]
+                    if not steady(since[i], now):
+                        if LIVE and signed[i] is None and steady(since[i], now + 3):
+                            signed[i] = client.create_order(OrderArgs(token_id=m["tokens"][i], price=entry, size=SIZE, side=BUY))
                         continue
                     if same_way(state["coins"], m["outcomes"][i]) >= MAX_SAME_WAY:
+                        skipped[i][1] = "same-way cap"
                         continue  # too many open bets on one direction already
                     if not reserve(entry * SIZE):
+                        skipped[i][1] = "low balance"
                         if not view.get("low"):
                             print(f"  {coin} low balance ({state['balance']:.2f}), skipping bid")
                         view["low"] = True
@@ -349,7 +368,7 @@ def trade_window(coin, m):
                                          "entry": entry, "ahead": round(feed.level(tok, entry), 2)}
                     print(f"  {coin} BID {m['outcomes'][i]} {SIZE}@{entry}  queue ahead {feed.level(tok, entry):.0f}  {left}s left")
                     if LIVE:
-                        o = client.create_order(OrderArgs(token_id=tok, price=entry, size=SIZE, side=BUY))
+                        o = signed[i] or client.create_order(OrderArgs(token_id=tok, price=entry, size=SIZE, side=BUY))
                         resp = client.post_order(o, OrderType.GTC, post_only=True)
                         order_id = resp.get("orderID")
                         if not order_id:
@@ -401,6 +420,9 @@ def trade_window(coin, m):
         if side_idx is not None and not LIVE:
             bump("balance", entry * (SIZE - held))  # unfilled part of the bid frees its money
 
+    for i, sk in enumerate(skipped):  # could have bid but didn't: check later whether that side won
+        if sk and i != side_idx and not halt.is_set():
+            log_skip(m["slug"], m["outcomes"][i], *sk)
     if side_idx is not None and not held and not halt.is_set():
         log(m["slug"], m["outcomes"][side_idx], entry, "", 0, "nofill")  # bid never filled: no trade
     if held and not stopped:

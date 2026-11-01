@@ -34,6 +34,8 @@ MAX_SAME_WAY = 3    # at most this many open fills needing the same direction (U
 MAX_LOSSES = 5
 MAX_LOSS_USD = 20   # also stop once P&L since start reaches -$20
 MIN_Z = float(os.getenv("MIN_Z", "0"))  # >0: skip unless the coin's real price is this many std-devs from flipping (0 = off)
+TAKE_MIN, TAKE_MAX = (float(x) for x in os.getenv("TAKE", "0-0").split("-"))  # e.g. 0.96-0.98: buy the ask in this range at once (dry run only)
+TAKER_FEE = 0.07    # Polymarket crypto Up/Down: takers pay 0.07 * p * (1-p) per share, makers nothing (checked 2026-11-02)
 MIN_MOVE = float(os.getenv("MIN_MOVE", "0"))  # >0: also skip unless the coin is at least this % past its window open, our way
 POLL = 0.2          # max wait between checks; the loop wakes on every websocket update anyway
 PORT = int(os.getenv("PORT", "8000"))
@@ -54,7 +56,7 @@ if LIVE:
 
 state = {"mode": "LIVE" if LIVE else "DRY-RUN", "started": datetime.now(timezone.utc).isoformat(timespec="seconds"),
          "config": {"entry": f"{ENTRY_MIN}-{ENTRY_MAX}", "window": ENTRY_WINDOW, "stop": STOP, "steady": STEADY, "size": SIZE,
-                    "max_losses": MAX_LOSSES, "max_loss_usd": MAX_LOSS_USD, "latency": LATENCY, "min_z": MIN_Z, "min_move": MIN_MOVE},
+                    "max_losses": MAX_LOSSES, "max_loss_usd": MAX_LOSS_USD, "latency": LATENCY, "min_z": MIN_Z, "min_move": MIN_MOVE, "take": f"{TAKE_MIN}-{TAKE_MAX}" if TAKE_MAX else None},
          "wins": 0, "losses": 0, "pnl": 0.0, "balance": BALANCE, "windows": 0, "bids": 0, "fills": 0, "net_errors": 0, "errors": [],
          "coins": {k: {"market": None, "position": None} for k in SERIES}, "pending": [], "status": "starting"}
 lock = threading.Lock()     # guards counters, pending, trades.csv and status.json
@@ -231,7 +233,7 @@ class Feed:
 
     def run(self):
         while self.alive:
-            self.ws.run_forever(ping_interval=10, ping_timeout=5)
+            self.ws.run_forever(ping_interval=10, ping_timeout=5, skip_utf8_validation=True)  # pure-Python utf8 check was half our CPU
             if self.alive:  # Polymarket dropped the feed: say so and reconnect quickly (books stay as last seen)
                 error(self.label, "price feed dropped, reconnected")
                 time.sleep(0.3)
@@ -367,6 +369,7 @@ def trade_window(coin, m):
     signed = [None] * len(m["tokens"])   # live: order signed ahead of time, sent the moment the rules allow
     z = [None] * len(m["tokens"])        # MIN_Z/MIN_MOVE: (z, move %) per side, fetched just before the bid is allowed
     name, span = coin.split("-")
+    take_px, checked_at = None, [0.0] * len(m["tokens"])  # TAKE: ask we bought at; last odds check per side
     if LIVE:
         for t in m["tokens"]:  # cached by the client, so posting the order needs no extra requests
             client.get_tick_size(t)
@@ -378,7 +381,30 @@ def trade_window(coin, m):
             left = int(m["end"] - time.time())
             view["market"] = {"slug": m["slug"], "outcomes": m["outcomes"], "books": books, "seconds_left": left}
 
-            if side_idx is None:
+            if side_idx is None and TAKE_MAX:  # taker test: Polymarket lags Binance, buy the cheap ask while it lasts
+                now = time.time()
+                for i, (bid, ask) in enumerate(books):
+                    if not TAKE_MIN <= ask <= TAKE_MAX or not NO_NEW_BIDS <= left <= ENTRY_WINDOW or now - checked_at[i] < 2:
+                        continue
+                    checked_at[i] = now
+                    skipped[i] = skipped[i] or [left, "odds"]
+                    odds = fair_z(name, m["end"] - ALL_SPANS[span], m["outcomes"][i] == "Up", left)
+                    if not odds_ok(odds):
+                        continue
+                    if same_way(state["coins"], m["outcomes"][i]) >= MAX_SAME_WAY:
+                        skipped[i][1] = "same-way cap"
+                        continue
+                    entry = round(ask + TAKER_FEE * ask * (1 - ask), 4)  # fee folded into the price we pay
+                    if not reserve(entry * SIZE):
+                        skipped[i][1] = "low balance"
+                        continue
+                    side_idx, tok, take_px, lands = i, m["tokens"][i], ask, now + LATENCY
+                    bump("bids")
+                    view["position"] = {"side": m["outcomes"][i], "status": "taking", "held": 0, "entry": entry, "ahead": 0}
+                    print(f"  {coin} TAKE {m['outcomes'][i]} {SIZE}@{ask} (+fee = {entry})  {left}s left  z={odds[0]:.2f} move={odds[1]:.3f}%")
+                    break
+
+            elif side_idx is None:
                 now = time.time()
                 for i, (bid, ask) in enumerate(books):
                     since[i] = (since[i] or now) if bid >= ENTRY_MIN else None
@@ -426,7 +452,12 @@ def trade_window(coin, m):
                 tok = m["tokens"][side_idx]
                 bid, ask = books[side_idx]
                 was = held
-                if LIVE and order_id and time.time() - checked >= 1:  # once a second: stay under rate limits
+                if take_px is not None:  # taker: fills on landing from the asks still at or below our price, else nothing
+                    if time.time() >= lands:
+                        with feed.lock:
+                            held = min(SIZE, sum(sz for px, sz in feed.books[tok][1].items() if px <= take_px))
+                        take_px = None
+                elif LIVE and order_id and time.time() - checked >= 1:  # once a second: stay under rate limits
                     checked = time.time()
                     held = float(client.get_order(order_id).get("size_matched", 0))
                 elif not LIVE and time.time() < lands:
@@ -500,7 +531,7 @@ def coin_loop(key):
 
 def run():
     print(f"mode={state['mode']} series={len(SERIES)} ({COINS} x {list(SPANS)}) entry={ENTRY_MIN}-{ENTRY_MAX} last {ENTRY_WINDOW}s stop={STOP} "
-          f"steady={STEADY} size={SIZE} latency={LATENCY} max_losses={MAX_LOSSES} max_loss_usd={MAX_LOSS_USD} min_z={MIN_Z} min_move={MIN_MOVE}")
+          f"steady={STEADY} size={SIZE} latency={LATENCY} max_losses={MAX_LOSSES} max_loss_usd={MAX_LOSS_USD} min_z={MIN_Z} min_move={MIN_MOVE} take={TAKE_MIN}-{TAKE_MAX}")
     try:
         geo = requests.get("https://polymarket.com/api/geoblock", timeout=5).json()
         print(f"geoblock {'BLOCKED' if geo.get('blocked') else 'ok'} ({geo.get('country')})")
@@ -508,6 +539,8 @@ def run():
             sys.exit("this server's country is blocked by Polymarket; not trading live")
     except (requests.RequestException, ValueError) as e:
         print(f"geoblock check failed: {e!r}")
+    if LIVE and TAKE_MAX:
+        sys.exit("TAKE is a dry-run test only; it has no live order path yet")
     serve_dashboard()
     try:  # positions still waiting for a result (and the dry-run money tied up in them) survive restarts
         saved = json.load(open("status.json"))

@@ -25,7 +25,7 @@ git clone https://github.com/atul2501/scalp.git ~/scalp
 cd ~/scalp
 python3.11 -m venv .venv
 .venv/bin/pip install -r requirements.txt
-.venv/bin/python bot.py --test        # prints "all tests passed"
+.venv/bin/python bot.py --test        # ends with "ok"
 ```
 
 ## 3. Configure `.env`

@@ -25,7 +25,7 @@ ENTRY_MIN = 0.98    # side's best bid must be at least this before we join...
 ENTRY_MAX = 0.99    # ...and we always bid exactly this (maker, front of the queue if early)
 ENTRY_WINDOW = 3600  # enter any time in the last N seconds; >= window length = join as early as possible
 STOP = None         # hold to the end: every stop so far (0.90 and 0.30) sold a side that went on to win
-STEADY = 20         # side must hold >= ENTRY_MIN this many seconds before we bid (late jumps = close markets)
+STEADY = float(os.getenv("STEADY", "20"))  # side must hold >= ENTRY_MIN this many seconds before we bid (late jumps = close markets)
 NO_NEW_BIDS = 10    # no new bids in the last N seconds (prices swing, fills are worst)
 SIZE = int(os.getenv("SIZE", "10"))  # shares (market min is 5)
 BALANCE = float(os.getenv("BALANCE", "100"))  # dry-run play money; live reads the real USDC balance
@@ -34,7 +34,7 @@ MAX_SAME_WAY = 3    # at most this many open fills needing the same direction (U
 MAX_LOSSES = 5
 MAX_LOSS_USD = 20   # also stop once P&L since start reaches -$20
 POLL = 0.2          # max wait between checks; the loop wakes on every websocket update anyway
-PORT = 8000
+PORT = int(os.getenv("PORT", "8000"))
 DASH_HOST = os.getenv("DASH_HOST", "127.0.0.1")  # 0.0.0.0 to reach the dashboard from outside
 LIVE = os.getenv("LIVE", "0") == "1"
 GAMMA = "https://gamma-api.polymarket.com"

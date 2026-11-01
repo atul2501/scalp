@@ -195,9 +195,10 @@ class Feed:
     def run(self):
         while self.alive:
             self.ws.run_forever(ping_interval=10, ping_timeout=5)
-            if self.alive:
+            if self.alive:  # Polymarket dropped the feed: say so and reconnect quickly (books stay as last seen)
                 bump("net_errors")
-                time.sleep(1)
+                print(f"  feed reconnect (websocket dropped) {time.strftime('%H:%M:%S')}")
+                time.sleep(0.3)
 
     def close(self):
         self.alive = False

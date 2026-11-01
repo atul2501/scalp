@@ -24,6 +24,7 @@
   #errbox { max-height:calc(8 * 31px + 32px); overflow-y:auto; }
   #errbox th, #tradesbox th { position:sticky; top:0; background:var(--card); }
   .stale { color:var(--down); font-weight:600; }
+  #bycoinhead th { cursor:pointer; user-select:none; }
 </style>
 </head>
 <body>
@@ -50,8 +51,8 @@
   <div class="grid" id="coins" style="grid-template-columns:repeat(auto-fit,minmax(220px,1fr))"></div>
 
   <div class="card scroll" style="margin-bottom:14px">
-    <div class="k" style="margin-bottom:6px">Results by coin &amp; window</div>
-    <table><thead><tr><th>Coin</th><th>Bids</th><th>Fills</th><th>Fill %</th><th>Wins</th><th>Stops / Losses</th><th>P&amp;L</th></tr></thead>
+    <div class="k" style="margin-bottom:6px">Results by coin &amp; window <span class="k">(click a column to sort)</span></div>
+    <table><thead id="bycoinhead"><tr><th>Coin</th><th>Bids</th><th>Fills</th><th>Fill %</th><th>Wins</th><th>Stops / Losses</th><th>P&amp;L</th></tr></thead>
     <tbody id="bycoin"></tbody></table>
   </div>
 
@@ -79,6 +80,14 @@ const series = slug => {
 };
 const esc = t => String(t).replace(/[&<>"]/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;'})[c]);
 const cls = n => n > 0 ? 'pos' : n < 0 ? 'neg' : '';
+// results table sort: column index and direction; clicking the same header flips it
+let sortCol = 0, sortDir = 1;
+$('bycoinhead').onclick = e => {
+  const i = [...e.target.parentNode.children].indexOf(e.target);
+  if (i < 0) return;
+  sortDir = i === sortCol ? -sortDir : (i ? -1 : 1);  // numbers start biggest-first, names A-Z
+  sortCol = i; tick();
+};
 
 async function tick() {
   try {
@@ -128,7 +137,10 @@ async function tick() {
       if (r[7] === 'win') b.wins++;
       if (r[7] === 'stop' || r[7] === 'loss') b.bad++;
     }
-    $('bycoin').innerHTML = Object.entries(by).map(([c, b]) =>
+    const key = ([c, b]) => [c, b.bids, b.fills, b.bids ? b.fills / b.bids : 0, b.wins, b.bad, b.pnl][sortCol];
+    const ths = $('bycoinhead').querySelectorAll('th');
+    ths.forEach((th, i) => th.textContent = th.textContent.replace(/ [▲▼]$/, '') + (i === sortCol ? (sortDir > 0 ? ' ▲' : ' ▼') : ''));
+    $('bycoin').innerHTML = Object.entries(by).sort((x, y) => { const a = key(x), b = key(y); return (a < b ? -1 : a > b ? 1 : 0) * sortDir; }).map(([c, b]) =>
       `<tr><td><b>${c}</b></td><td>${b.bids}</td><td>${b.fills}</td><td>${b.bids ? (100 * b.fills / b.bids).toFixed(0) : 0}%</td><td class="pos">${b.wins}</td><td class="${b.bad ? 'neg' : ''}">${b.bad}</td><td class="${cls(b.pnl)}">${b.pnl.toFixed(2)}</td></tr>`
     ).join('') || '<tr><td colspan="7" class="k">no trades yet</td></tr>';
     $('trades').innerHTML = rows.map(r => {

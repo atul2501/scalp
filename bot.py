@@ -22,7 +22,7 @@ SPANS = {s: ALL_SPANS[s] for s in os.getenv("SPANS", "5m,15m,1h,4h").replace(" "
 SERIES = [f"{c}-{s}" for s in SPANS for c in COINS]   # e.g. "btc-5m", one thread each
 HOURLY_NAME = {"btc": "bitcoin", "eth": "ethereum", "sol": "solana", "doge": "dogecoin", "xrp": "xrp", "bnb": "bnb"}
 ENTRY_MIN = 0.98    # side's best bid must be at least this before we join...
-ENTRY_MAX = 0.99    # ...and we always bid exactly this (maker, front of the queue if early)
+ENTRY_MAX = float(os.getenv("BID", "0.99"))  # ...and we always bid exactly this (maker, front of the queue if early)
 ENTRY_WINDOW = 3600  # enter any time in the last N seconds; >= window length = join as early as possible
 STOP = None         # hold to the end: every stop so far (0.90 and 0.30) sold a side that went on to win
 STEADY = float(os.getenv("STEADY", "20"))  # side must hold >= ENTRY_MIN this many seconds before we bid (late jumps = close markets)
@@ -33,6 +33,7 @@ LATENCY = float(os.getenv("LATENCY", "0.07"))  # dry-run order delay: ~65 ms mea
 MAX_SAME_WAY = 3    # at most this many open fills needing the same direction (Up or Down) at once
 MAX_LOSSES = 5
 MAX_LOSS_USD = 20   # also stop once P&L since start reaches -$20
+MIN_Z = float(os.getenv("MIN_Z", "0"))  # >0: skip unless the coin's real price is this many std-devs from flipping (0 = off)
 POLL = 0.2          # max wait between checks; the loop wakes on every websocket update anyway
 PORT = int(os.getenv("PORT", "8000"))
 DASH_HOST = os.getenv("DASH_HOST", "127.0.0.1")  # 0.0.0.0 to reach the dashboard from outside
@@ -40,6 +41,7 @@ LIVE = os.getenv("LIVE", "0") == "1"
 GAMMA = "https://gamma-api.polymarket.com"
 CLOB = "https://clob.polymarket.com"
 WS = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
+BINANCE = "https://api.binance.com"
 
 client = None
 if LIVE:
@@ -51,7 +53,7 @@ if LIVE:
 
 state = {"mode": "LIVE" if LIVE else "DRY-RUN", "started": datetime.now(timezone.utc).isoformat(timespec="seconds"),
          "config": {"entry": f"{ENTRY_MIN}-{ENTRY_MAX}", "window": ENTRY_WINDOW, "stop": STOP, "steady": STEADY, "size": SIZE,
-                    "max_losses": MAX_LOSSES, "max_loss_usd": MAX_LOSS_USD, "latency": LATENCY},
+                    "max_losses": MAX_LOSSES, "max_loss_usd": MAX_LOSS_USD, "latency": LATENCY, "min_z": MIN_Z},
          "wins": 0, "losses": 0, "pnl": 0.0, "balance": BALANCE, "windows": 0, "bids": 0, "fills": 0, "net_errors": 0, "errors": [],
          "coins": {k: {"market": None, "position": None} for k in SERIES}, "pending": [], "status": "starting"}
 lock = threading.Lock()     # guards counters, pending, trades.csv and status.json
@@ -130,6 +132,27 @@ def sim_fill(price, ahead, sells, level, prev):
     if 0 < level < rest:
         ahead *= level / rest
     return min(ahead, level), filled
+
+
+def z_score(open_, closes, up, left):
+    """How many std-devs the coin is from flipping the window, on our side (+) or not (-),
+    given its per-second volatility in `closes` and `left` seconds to go."""
+    rets = [(b - a) / a for a, b in zip(closes, closes[1:])]
+    var = sum(r * r for r in rets) / max(len(rets), 1)
+    d = (closes[-1] - open_) / open_ * (1 if up else -1)
+    return d / ((var * left) ** 0.5) if var else (float("inf") if d > 0 else 0.0)
+
+
+def fair_z(coin, start, up, left):
+    """z_score from Binance 1s candles: the open at window start, then the last 5 minutes. None on failure."""
+    url, sym = f"{BINANCE}/api/v3/klines", coin.upper() + "USDT"
+    try:
+        first = requests.get(url, params={"symbol": sym, "interval": "1s", "startTime": int(start) * 1000, "limit": 1}, timeout=3).json()
+        recent = requests.get(url, params={"symbol": sym, "interval": "1s", "limit": 300}, timeout=3).json()
+        return z_score(float(first[0][1]), [float(k[4]) for k in recent], up, left)
+    except (requests.RequestException, ValueError, IndexError, KeyError, TypeError) as e:
+        error(f"binance {sym}", repr(e))
+        return None
 
 
 def same_way(coins, side):
@@ -336,6 +359,8 @@ def trade_window(coin, m):
     lands = checked = 0.0  # dry-run: when our order reaches the book; live: last fill check
     skipped = [None] * len(m["tokens"])  # [seconds left when first biddable, why not bid] per side
     signed = [None] * len(m["tokens"])   # live: order signed ahead of time, sent the moment the rules allow
+    z = [None] * len(m["tokens"])        # MIN_Z: fair-odds score per side, fetched just before the bid is allowed
+    name, span = coin.split("-")
     if LIVE:
         for t in m["tokens"]:  # cached by the client, so posting the order needs no extra requests
             client.get_tick_size(t)
@@ -351,14 +376,22 @@ def trade_window(coin, m):
                 now = time.time()
                 for i, (bid, ask) in enumerate(books):
                     since[i] = (since[i] or now) if bid >= ENTRY_MIN else None
+                    if since[i] is None:
+                        z[i] = None  # fell back below 0.98: re-check the odds if it comes back
                     entry = entry_price(bid, ask, left)
                     if entry is None:
                         continue
                     skipped[i] = skipped[i] or [left, "unsteady"]
                     if not steady(since[i], now):
-                        if LIVE and signed[i] is None and steady(since[i], now + 3):
-                            signed[i] = client.create_order(OrderArgs(token_id=m["tokens"][i], price=entry, size=SIZE, side=BUY))
+                        if steady(since[i], now + 3):
+                            if LIVE and signed[i] is None:
+                                signed[i] = client.create_order(OrderArgs(token_id=m["tokens"][i], price=entry, size=SIZE, side=BUY))
+                            if MIN_Z and z[i] is None:
+                                z[i] = fair_z(name, m["end"] - ALL_SPANS[span], m["outcomes"][i] == "Up", left)
                         continue
+                    if MIN_Z and (z[i] is None or z[i] < MIN_Z):
+                        skipped[i][1] = "odds"
+                        continue  # Polymarket says near-certain, the coin's real price says it could still flip
                     if same_way(state["coins"], m["outcomes"][i]) >= MAX_SAME_WAY:
                         skipped[i][1] = "same-way cap"
                         continue  # too many open bets on one direction already
@@ -374,7 +407,7 @@ def trade_window(coin, m):
                     bump("bids")
                     view["position"] = {"side": m["outcomes"][i], "status": "bidding", "held": 0,
                                          "entry": entry, "ahead": round(feed.level(tok, entry), 2)}
-                    print(f"  {coin} BID {m['outcomes'][i]} {SIZE}@{entry}  queue ahead {feed.level(tok, entry):.0f}  {left}s left")
+                    print(f"  {coin} BID {m['outcomes'][i]} {SIZE}@{entry}  queue ahead {feed.level(tok, entry):.0f}  {left}s left" + (f"  z={z[i]:.2f}" if MIN_Z else ""))
                     if LIVE:
                         o = signed[i] or client.create_order(OrderArgs(token_id=tok, price=entry, size=SIZE, side=BUY))
                         resp = client.post_order(o, OrderType.GTC, post_only=True)
@@ -461,7 +494,7 @@ def coin_loop(key):
 
 def run():
     print(f"mode={state['mode']} series={len(SERIES)} ({COINS} x {list(SPANS)}) entry={ENTRY_MIN}-{ENTRY_MAX} last {ENTRY_WINDOW}s stop={STOP} "
-          f"steady={STEADY} size={SIZE} latency={LATENCY} max_losses={MAX_LOSSES} max_loss_usd={MAX_LOSS_USD}")
+          f"steady={STEADY} size={SIZE} latency={LATENCY} max_losses={MAX_LOSSES} max_loss_usd={MAX_LOSS_USD} min_z={MIN_Z}")
     try:
         geo = requests.get("https://polymarket.com/api/geoblock", timeout=5).json()
         print(f"geoblock {'BLOCKED' if geo.get('blocked') else 'ok'} ({geo.get('country')})")
@@ -548,6 +581,11 @@ def test():
     assert reserve(9.9) and state["balance"] == 5.1 and not reserve(9.9)
     state["balance"] = BALANCE
     assert keep_running(0, 0) and not keep_running(MAX_LOSSES, 0) and not keep_running(1, -MAX_LOSS_USD)
+    # fair odds: no move = 0; price moving +/-1 each second, 4 above the open with 4 s left = 2 std-devs
+    assert z_score(100, [100, 100, 100], True, 60) == 0.0
+    closes = [100 + (i % 2) for i in range(301)] + [104]
+    zu, zd = z_score(100, closes, True, 4), z_score(100, closes, False, 4)
+    assert 1.9 < zu < 2.1 and zd == -zu
     print("ok")
 
 

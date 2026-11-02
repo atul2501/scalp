@@ -31,7 +31,7 @@ SIZE = int(os.getenv("SIZE", "10"))  # shares (market min is 5)
 BALANCE = float(os.getenv("BALANCE", "100"))  # dry-run play money; live reads the real USDC balance
 LATENCY = float(os.getenv("LATENCY", "0.07"))  # dry-run order delay: ~65 ms measured from Stockholm, ~38 ms from Ireland
 MAX_SAME_WAY = 3    # at most this many open fills needing the same direction (Up or Down) at once
-MAX_LOSSES = 5
+MAX_LOSSES = int(os.getenv("MAX_LOSSES", "5"))  # 0 = no loss-count limit, only MAX_LOSS_USD
 MAX_LOSS_USD = 20   # also stop once P&L since start reaches -$20
 MIN_Z = float(os.getenv("MIN_Z", "0"))  # >0: skip unless the coin's real price is this many std-devs from flipping (0 = off)
 TAKE_MIN, TAKE_MAX = (float(x) for x in os.getenv("TAKE", "0-0").split("-"))  # e.g. 0.96-0.98: buy the ask in this range at once (dry run only)
@@ -169,7 +169,7 @@ def same_way(coins, side):
 
 
 def keep_running(losses, pnl_):
-    return losses < MAX_LOSSES and pnl_ > -MAX_LOSS_USD
+    return (not MAX_LOSSES or losses < MAX_LOSSES) and pnl_ > -MAX_LOSS_USD
 
 
 def live_balance():
@@ -581,6 +581,7 @@ def run():
 
 
 def test():
+    global MIN_Z, MIN_MOVE, MAX_LOSSES
     assert slug_for("btc", "5m", 1793473899) == "btc-updown-5m-1793473800"
     assert slug_for("eth", "15m", 1793474000) == "eth-updown-15m-1793473200"
     assert slug_for("btc", "1h", 1793504900) == "bitcoin-up-or-down-october-31-2026-11pm-et"
@@ -620,13 +621,15 @@ def test():
     assert reserve(9.9) and state["balance"] == 5.1 and not reserve(9.9)
     state["balance"] = BALANCE
     assert keep_running(0, 0) and not keep_running(MAX_LOSSES, 0) and not keep_running(1, -MAX_LOSS_USD)
+    MAX_LOSSES = 0  # off: only the money limit stops it
+    assert keep_running(50, 21.37) and not keep_running(50, -MAX_LOSS_USD)
+    MAX_LOSSES = 5
     # fair odds: no move = 0; price moving +/-1 each second, 4 above the open with 4 s left = 2 std-devs
     assert z_score(100, [100, 100, 100], True, 60) == (0.0, 0.0)
     closes = [100 + (i % 2) for i in range(301)] + [104]
     (zu, mu), (zd, md) = z_score(100, closes, True, 4), z_score(100, closes, False, 4)
     assert 1.9 < zu < 2.1 and zd == -zu and abs(mu - 4) < 1e-9 and md == -mu
     # a quiet night: high z but only 0.02% past the open is still too close when MIN_MOVE asks for 0.05%
-    global MIN_Z, MIN_MOVE
     MIN_Z, MIN_MOVE = 2.0, 0.05
     assert odds_ok((3.4, 0.08)) and not odds_ok((3.4, 0.02)) and not odds_ok((1.5, 0.08)) and not odds_ok(None)
     MIN_Z = MIN_MOVE = 0.0

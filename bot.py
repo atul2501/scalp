@@ -37,6 +37,8 @@ MIN_Z = float(os.getenv("MIN_Z", "0"))  # >0: skip unless the coin's real price 
 TAKE_MIN, TAKE_MAX = (float(x) for x in os.getenv("TAKE", "0-0").split("-"))  # e.g. 0.96-0.98: buy the ask in this range at once (dry run only)
 TAKER_FEE = 0.07    # Polymarket crypto Up/Down: takers pay 0.07 * p * (1-p) per share, makers nothing (checked 2026-11-02)
 MIN_MOVE = float(os.getenv("MIN_MOVE", "0"))  # >0: also skip unless the coin is at least this % past its window open, our way
+PULL = float(os.getenv("PULL", "0"))  # >0: cancel a waiting bid once the coin moves this % against us within PULL_SECS (0 = off)
+PULL_SECS = 3
 POLL = 0.2          # max wait between checks; the loop wakes on every websocket update anyway
 PORT = int(os.getenv("PORT", "8000"))
 DASH_HOST = os.getenv("DASH_HOST", "127.0.0.1")  # 0.0.0.0 to reach the dashboard from outside
@@ -45,6 +47,7 @@ GAMMA = "https://gamma-api.polymarket.com"
 CLOB = "https://clob.polymarket.com"
 WS = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
 BINANCE = "https://api.binance.com"
+BINANCE_WS = "wss://stream.binance.com:9443/stream?streams="
 
 client = None
 if LIVE:
@@ -56,7 +59,7 @@ if LIVE:
 
 state = {"mode": "LIVE" if LIVE else "DRY-RUN", "started": datetime.now(timezone.utc).isoformat(timespec="seconds"),
          "config": {"entry": f"{ENTRY_MIN}-{ENTRY_MAX}", "window": ENTRY_WINDOW, "stop": STOP, "steady": STEADY, "size": SIZE,
-                    "max_losses": MAX_LOSSES, "max_loss_usd": MAX_LOSS_USD, "latency": LATENCY, "min_z": MIN_Z, "min_move": MIN_MOVE, "take": f"{TAKE_MIN}-{TAKE_MAX}" if TAKE_MAX else None},
+                    "max_losses": MAX_LOSSES, "max_loss_usd": MAX_LOSS_USD, "latency": LATENCY, "min_z": MIN_Z, "min_move": MIN_MOVE, "pull": PULL, "take": f"{TAKE_MIN}-{TAKE_MAX}" if TAKE_MAX else None},
          "wins": 0, "losses": 0, "pnl": 0.0, "balance": BALANCE, "windows": 0, "bids": 0, "fills": 0, "net_errors": 0, "errors": [],
          "coins": {k: {"market": None, "position": None} for k in SERIES}, "pending": [], "status": "starting"}
 lock = threading.Lock()     # guards counters, pending, trades.csv and status.json
@@ -161,6 +164,41 @@ def fair_z(coin, start, up, left):
     except (requests.RequestException, ValueError, IndexError, KeyError, TypeError) as e:
         error(f"binance {sym}", repr(e))
         return None
+
+
+ticks = {}  # PULL: coin -> [(arrival time, Binance trade price)] for the last PULL_SECS
+ticks_lock = threading.Lock()
+
+
+def watch_binance():
+    """PULL: live Binance trades for every coin, so a waiting bid can be cancelled the moment the coin jumps."""
+    def on_message(ws, raw):
+        x = json.loads(raw)
+        coin, now = x["stream"].split("usdt@")[0], time.time()
+        with ticks_lock:
+            t = ticks.setdefault(coin, [])
+            t.append((now, float(x["data"]["p"])))
+            while t[0][0] < now - PULL_SECS:
+                t.pop(0)
+    url = BINANCE_WS + "/".join(f"{c}usdt@aggTrade" for c in COINS)
+    while not halt.is_set():
+        websocket.WebSocketApp(url, on_message=on_message).run_forever(ping_interval=10, ping_timeout=5, skip_utf8_validation=True)
+        if not halt.is_set():
+            error("binance ws", "feed dropped, reconnected")
+            time.sleep(1)
+
+
+def against(prices, up):
+    """% the coin moved against our side in `prices` (oldest first): fall from the high for Up, rise from the low for Down."""
+    if not prices:
+        return 0.0
+    hi, lo, last = max(prices), min(prices), prices[-1]
+    return (hi - last) / hi * 100 if up else (last - lo) / lo * 100
+
+
+def recent(coin):
+    with ticks_lock:
+        return [p for t, p in ticks.get(coin, []) if t >= time.time() - PULL_SECS]
 
 
 def same_way(coins, side):
@@ -370,6 +408,7 @@ def trade_window(coin, m):
     z = [None] * len(m["tokens"])        # MIN_Z/MIN_MOVE: (z, move %) per side, fetched just before the bid is allowed
     name, span = coin.split("-")
     take_px, checked_at = None, [0.0] * len(m["tokens"])  # TAKE: ask we bought at; last odds check per side
+    pull_at = None  # PULL: when our cancel reaches the book (fills until then still count)
     if LIVE:
         for t in m["tokens"]:  # cached by the client, so posting the order needs no extra requests
             client.get_tick_size(t)
@@ -478,6 +517,17 @@ def trade_window(coin, m):
                         bump("fills")
                     view["position"].update(status="filled", held=held)
                     print(f"  {coin} FILLED {held} @ {entry}  {left}s left")
+                if PULL and take_px is None and pull_at is None and held < SIZE:
+                    move = against(recent(name), m["outcomes"][side_idx] == "Up")
+                    if move >= PULL:  # coin jumping toward a flip: sellers are about to dump into our bid
+                        pull_at = time.time() + LATENCY
+                        print(f"  {coin} PULL {m['outcomes'][side_idx]} bid: coin moved {move:.3f}% against us  {left}s left  held {held}")
+                        if LIVE and order_id:
+                            client.cancel_order(OrderPayload(orderID=order_id))
+                if pull_at and time.time() >= pull_at:
+                    if LIVE and order_id:
+                        held = float(client.get_order(order_id).get("size_matched", 0))
+                    break
 
             if held and STOP is not None:
                 bid, _ = books[side_idx]
@@ -501,7 +551,9 @@ def trade_window(coin, m):
     for i, sk in enumerate(skipped):  # could have bid but didn't: check later whether that side won
         if sk and i != side_idx and not halt.is_set():
             log_skip(m["slug"], m["outcomes"][i], *sk)
-    if side_idx is not None and not held and not halt.is_set():
+    if pull_at and not held and not halt.is_set():
+        log_skip(m["slug"], m["outcomes"][side_idx], left, "pulled")  # settles later as would-have-won/lost: the cost of pulling
+    elif side_idx is not None and not held and not halt.is_set():
         log(m["slug"], m["outcomes"][side_idx], entry, "", 0, "nofill")  # bid never filled: no trade
     if held and not stopped:
         with lock:
@@ -531,7 +583,7 @@ def coin_loop(key):
 
 def run():
     print(f"mode={state['mode']} series={len(SERIES)} ({COINS} x {list(SPANS)}) entry={ENTRY_MIN}-{ENTRY_MAX} last {ENTRY_WINDOW}s stop={STOP} "
-          f"steady={STEADY} size={SIZE} latency={LATENCY} max_losses={MAX_LOSSES} max_loss_usd={MAX_LOSS_USD} min_z={MIN_Z} min_move={MIN_MOVE} take={TAKE_MIN}-{TAKE_MAX}")
+          f"steady={STEADY} size={SIZE} latency={LATENCY} max_losses={MAX_LOSSES} max_loss_usd={MAX_LOSS_USD} min_z={MIN_Z} min_move={MIN_MOVE} pull={PULL} take={TAKE_MIN}-{TAKE_MAX}")
     try:
         geo = requests.get("https://polymarket.com/api/geoblock", timeout=5).json()
         print(f"geoblock {'BLOCKED' if geo.get('blocked') else 'ok'} ({geo.get('country')})")
@@ -556,6 +608,8 @@ def run():
         state["balance"] = live_balance()
     print(f"balance {state['balance']:.2f} USDC" + (" (0 in live: check SIGNATURE_TYPE and FUNDER in .env)" if LIVE and not state["balance"] else ""))
     signal.signal(signal.SIGTERM, lambda *a: halt.set())  # systemctl stop: windows exit and cancel their orders
+    if PULL:
+        threading.Thread(target=watch_binance, daemon=True).start()
     state["status"] = "running"
     threads = [threading.Thread(target=coin_loop, args=(k,), daemon=True) for k in SERIES]
     for t in threads:
@@ -633,6 +687,9 @@ def test():
     MIN_Z, MIN_MOVE = 2.0, 0.05
     assert odds_ok((3.4, 0.08)) and not odds_ok((3.4, 0.02)) and not odds_ok((1.5, 0.08)) and not odds_ok(None)
     MIN_Z = MIN_MOVE = 0.0
+    # pull: 2 Nov 19:27 spike, ETH 2246.56 -> 2249.01 is 0.110% against a Down bid, nothing against an Up bid
+    assert abs(against([2246.53, 2246.56, 2249.01], False) - 0.110) < 0.001 and against([2246.53, 2246.56, 2249.01], True) == 0
+    assert abs(against([100, 99.9], True) - 0.1) < 1e-9 and against([], True) == 0
     print("ok")
 
 

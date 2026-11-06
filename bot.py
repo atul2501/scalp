@@ -4,7 +4,7 @@ LIVE=0 (default) is dry-run: public endpoints only, simulated fills with a live-
 (order latency, fair-share cancels, fills from the other token, a money limit). LIVE=1 + keys in .env = real orders.
 One thread per coin/window series; dashboard on PORT while the bot runs.
 """
-import csv, json, os, signal, sys, threading, time
+import csv, json, os, signal, sys, threading, time, traceback
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
@@ -51,7 +51,7 @@ BINANCE_WS = "wss://stream.binance.com:9443/stream?streams="
 
 client = None
 if LIVE:
-    from py_clob_client_v2 import ClobClient, OrderArgs, MarketOrderArgs, OrderType, BalanceAllowanceParams, AssetType, OrderPayload
+    from py_clob_client_v2 import ClobClient, OrderArgs, MarketOrderArgs, OrderType, BalanceAllowanceParams, AssetType, OrderPayload, OrderMarketCancelParams
     from py_clob_client_v2.order_builder.constants import BUY, SELL
     client = ClobClient(CLOB, key=os.environ["PRIVATE_KEY"], chain_id=137,
                         signature_type=int(os.getenv("SIGNATURE_TYPE", "3")), funder=os.getenv("FUNDER"))
@@ -498,7 +498,8 @@ def trade_window(coin, m):
                         take_px = None
                 elif LIVE and order_id and time.time() - checked >= 1:  # once a second: stay under rate limits
                     checked = time.time()
-                    held = float(client.get_order(order_id).get("size_matched", 0))
+                    o = client.get_order(order_id)  # null for a moment right after posting
+                    held = float(o.get("size_matched", held)) if o else held
                 elif not LIVE and time.time() < lands:
                     feed.take_sells(tok)  # trades before our order lands can't fill it
                 elif not LIVE:
@@ -526,7 +527,8 @@ def trade_window(coin, m):
                             client.cancel_order(OrderPayload(orderID=order_id))
                 if pull_at and time.time() >= pull_at:
                     if LIVE and order_id:
-                        held = float(client.get_order(order_id).get("size_matched", 0))
+                        o = client.get_order(order_id)
+                        held = float(o.get("size_matched", held)) if o else held
                     break
 
             if held and STOP is not None:
@@ -543,8 +545,8 @@ def trade_window(coin, m):
             feed.changed.wait(POLL)
     finally:
         feed.close()
-        if LIVE and order_id and not stopped:
-            client.cancel_order(OrderPayload(orderID=order_id))  # drop any unfilled remainder
+        if LIVE and side_idx is not None and not stopped:  # drop any unfilled remainder, even if a crash lost the order id
+            client.cancel_market_orders(OrderMarketCancelParams(asset_id=m["tokens"][side_idx]))
         if side_idx is not None and not LIVE:
             bump("balance", entry * (SIZE - held))  # unfilled part of the bid frees its money
 
@@ -566,6 +568,7 @@ def coin_loop(key):
     """Trade every window of one coin/span series (e.g. "btc-15m") until the kill switch trips."""
     coin, span = key.split("-")
     while not halt.is_set():
+        m = None
         try:
             m = get_market(slug_for(coin, span, time.time()))
             if not m or m["end"] <= time.time():
@@ -578,7 +581,9 @@ def coin_loop(key):
             halt.wait(max(0, m["end"] - time.time()) + 1)  # one entry per window
         except Exception as e:  # one coin's bad window must not kill the others
             error(key, repr(e))
-            time.sleep(5)
+            traceback.print_exc()
+            # sit out the rest of a window that failed mid-trade: retrying it could bid twice in one market
+            halt.wait(max(5, m["end"] - time.time() + 1) if m else 5)
 
 
 def run():

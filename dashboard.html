@@ -30,6 +30,7 @@
 <body>
 <main>
   <h1>Scalp Bot <span id="mode" class="k"></span></h1>
+  <div class="k" id="wallet" hidden>Wallet <a id="walletlink" target="_blank" rel="noopener" style="color:inherit; word-break:break-all"></a></div>
   <div class="sub" id="sub">loading…</div>
 
   <div class="grid">
@@ -94,6 +95,8 @@ async function tick() {
     const s = await (await fetch('status.json?' + Date.now())).json();
     const age = (Date.now() - new Date(s.updated)) / 1000;
     $('mode').textContent = s.mode;
+    $('wallet').hidden = !s.wallet;
+    if (s.wallet) { $('walletlink').textContent = s.wallet; $('walletlink').href = 'https://polymarket.com/profile/' + s.wallet; }
     $('sub').innerHTML = `${s.status} · started ${fmt(s.started)} · updated ${Math.round(age)}s ago`
       + (age > 30 ? ' <span class="stale">(bot not updating)</span>' : '')
       + ` · entry ${s.config.entry} stop ${s.config.stop ?? 'none (hold)'} size ${s.config.size} · latency ${s.config.latency ?? '–'}s · kill at ${s.config.max_losses} losses or -$${s.config.max_loss_usd ?? '–'} · net errors ${s.net_errors}`;

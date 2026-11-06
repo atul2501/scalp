@@ -74,7 +74,7 @@ if LIVE:
     client.set_api_creds(client.create_or_derive_api_key())
     client = Locked(client)
 
-state = {"mode": "LIVE" if LIVE else "DRY-RUN", "started": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+state = {"mode": "LIVE" if LIVE else "DRY-RUN", "wallet": os.getenv("FUNDER") if LIVE else None,"started": datetime.now(timezone.utc).isoformat(timespec="seconds"),
          "config": {"entry": f"{ENTRY_MIN}-{ENTRY_MAX}", "window": ENTRY_WINDOW, "stop": STOP, "steady": STEADY, "size": SIZE,
                     "max_losses": MAX_LOSSES, "max_loss_usd": MAX_LOSS_USD, "latency": LATENCY, "min_z": MIN_Z, "min_move": MIN_MOVE, "pull": PULL, "take": f"{TAKE_MIN}-{TAKE_MAX}" if TAKE_MAX else None},
          "wins": 0, "losses": 0, "pnl": 0.0, "balance": BALANCE, "windows": 0, "bids": 0, "fills": 0, "net_errors": 0, "errors": [],

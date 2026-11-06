@@ -49,6 +49,21 @@ WS = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
 BINANCE = "https://api.binance.com"
 BINANCE_WS = "wss://stream.binance.com:9443/stream?streams="
 
+class Locked:
+    """One call at a time: py-clob-client-v2 shares a single HTTP/2 connection, and our coin threads using it at once corrupt it."""
+    def __init__(self, obj):
+        self._obj, self._lock = obj, threading.Lock()
+
+    def __getattr__(self, name):
+        f = getattr(self._obj, name)
+        if not callable(f):
+            return f
+        def call(*a, **kw):
+            with self._lock:
+                return f(*a, **kw)
+        return call
+
+
 client = None
 if LIVE:
     from py_clob_client_v2 import ClobClient, OrderArgs, MarketOrderArgs, OrderType, BalanceAllowanceParams, AssetType, OrderPayload, OrderMarketCancelParams
@@ -56,6 +71,7 @@ if LIVE:
     client = ClobClient(CLOB, key=os.environ["PRIVATE_KEY"], chain_id=137,
                         signature_type=int(os.getenv("SIGNATURE_TYPE", "3")), funder=os.getenv("FUNDER"))
     client.set_api_creds(client.create_or_derive_api_key())
+    client = Locked(client)
 
 state = {"mode": "LIVE" if LIVE else "DRY-RUN", "started": datetime.now(timezone.utc).isoformat(timespec="seconds"),
          "config": {"entry": f"{ENTRY_MIN}-{ENTRY_MAX}", "window": ENTRY_WINDOW, "stop": STOP, "steady": STEADY, "size": SIZE,
@@ -692,6 +708,9 @@ def test():
     MIN_Z, MIN_MOVE = 2.0, 0.05
     assert odds_ok((3.4, 0.08)) and not odds_ok((3.4, 0.02)) and not odds_ok((1.5, 0.08)) and not odds_ok(None)
     MIN_Z = MIN_MOVE = 0.0
+    # live client wrapper: calls pass through, one at a time
+    w = Locked(f)
+    assert w.other == f.other and w.level("U", 0.5) == 0.0 and not w._lock.locked()
     # pull: 2 Nov 19:27 spike, ETH 2246.56 -> 2249.01 is 0.110% against a Down bid, nothing against an Up bid
     assert abs(against([2246.53, 2246.56, 2249.01], False) - 0.110) < 0.001 and against([2246.53, 2246.56, 2249.01], True) == 0
     assert abs(against([100, 99.9], True) - 0.1) < 1e-9 and against([], True) == 0

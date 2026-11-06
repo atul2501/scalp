@@ -5,73 +5,185 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Scalp Bot</title>
 <style>
-  :root { --bg:#f7f7f5; --card:#fff; --fg:#1b1b1b; --mute:#6b6b6b; --line:#e4e4e0; --up:#13804b; --down:#c0392b; --warn:#b7791f; }
-  @media (prefers-color-scheme: dark) { :root { --bg:#121212; --card:#1c1c1c; --fg:#ececec; --mute:#9a9a9a; --line:#2c2c2c; --up:#3ccf86; --down:#ff6b5b; --warn:#f0b450; } }
+  :root {
+    color-scheme: light;
+    --bg:#f4f4f1; --card:#ffffff; --sunken:#f8f8f6; --fg:#121212; --fg2:#52514e; --mute:#7a7975; --line:#e6e5e0;
+    --up:#0f7a45; --up-bg:#e3f4ea; --down:#c0392b; --down-bg:#fbe7e4; --warn:#a86a00; --warn-bg:#fbf0d9;
+    --accent:#2a78d6; --accent-bg:#e5effb; --live:#d92d20;
+    --radius:12px; --shadow:0 1px 2px rgba(0,0,0,.04), 0 1px 1px rgba(0,0,0,.02);
+  }
+  @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --bg:#0f0f0e; --card:#1a1a19; --sunken:#151514; --fg:#f0efec; --fg2:#c3c2b7; --mute:#8d8c86; --line:#2b2b29;
+    --up:#3ccf86; --up-bg:#123323; --down:#ff6b5b; --down-bg:#3a1714; --warn:#f0b450; --warn-bg:#352812;
+    --accent:#3987e5; --accent-bg:#132a47; --live:#ff5a4d; --shadow:none;
+  } }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --bg:#0f0f0e; --card:#1a1a19; --sunken:#151514; --fg:#f0efec; --fg2:#c3c2b7; --mute:#8d8c86; --line:#2b2b29;
+    --up:#3ccf86; --up-bg:#123323; --down:#ff6b5b; --down-bg:#3a1714; --warn:#f0b450; --warn-bg:#352812;
+    --accent:#3987e5; --accent-bg:#132a47; --live:#ff5a4d; --shadow:none;
+  }
   * { box-sizing:border-box; }
-  body { margin:0; padding:20px 16px; background:var(--bg); color:var(--fg); font:14px/1.45 -apple-system,system-ui,sans-serif; }
-  main { max-width:1000px; margin:0 auto; }
-  h1 { font-size:20px; margin:0 0 4px; } .sub { color:var(--mute); margin-bottom:16px; }
-  .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(140px,1fr)); gap:10px; margin-bottom:14px; }
-  .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:12px 14px; }
-  .k { color:var(--mute); font-size:12px; } .v { font-size:22px; font-weight:600; font-variant-numeric:tabular-nums; }
+  [hidden] { display:none !important; }
+  body { margin:0; background:var(--bg); color:var(--fg); font:14px/1.45 ui-sans-serif,-apple-system,"Segoe UI",system-ui,sans-serif; -webkit-font-smoothing:antialiased; }
+  main { max-width:1180px; margin:0 auto; padding:20px 16px 40px; }
+  .num { font-variant-numeric:tabular-nums; }
+  .mono { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:12.5px; }
+  .k { color:var(--mute); font-size:12px; }
   .pos { color:var(--up); } .neg { color:var(--down); } .warn { color:var(--warn); }
-  .books { display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-bottom:14px; }
-  table { width:100%; border-collapse:collapse; font-variant-numeric:tabular-nums; }
-  th, td { text-align:left; padding:6px 8px; border-bottom:1px solid var(--line); white-space:nowrap; }
-  th { color:var(--mute); font-weight:500; font-size:12px; }
-  .scroll { overflow-x:auto; }
-  #tradesbox { max-height:calc(20 * 31px + 32px); overflow-y:auto; }  /* ~20 rows, then scroll */
-  #errbox { max-height:calc(8 * 31px + 32px); overflow-y:auto; }
-  #errbox th, #tradesbox th { position:sticky; top:0; background:var(--card); }
+  a { color:var(--accent); text-decoration:none; } a:hover { text-decoration:underline; }
+
+  /* header */
+  .top { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:12px; margin-bottom:6px; }
+  .brand { display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
+  .brand h1 { font-size:20px; letter-spacing:-.01em; margin:0; }
+  .pill { display:inline-flex; align-items:center; gap:6px; padding:3px 10px; border-radius:999px; font-size:12px; font-weight:600; border:1px solid var(--line); background:var(--card); color:var(--fg2); }
+  .pill.live { color:var(--live); border-color:color-mix(in srgb, var(--live) 35%, transparent); background:color-mix(in srgb, var(--live) 10%, var(--card)); }
+  .pill.ok { color:var(--up); background:var(--up-bg); border-color:transparent; }
+  .pill.bad { color:var(--down); background:var(--down-bg); border-color:transparent; }
+  .dot { width:7px; height:7px; border-radius:50%; background:currentColor; }
+  .live .dot { animation:pulse 1.6s ease-in-out infinite; }
+  @keyframes pulse { 50% { opacity:.25; } }
+  @media (prefers-reduced-motion: reduce) { .live .dot { animation:none; } }
+  .updated { font-size:12px; color:var(--mute); }
   .stale { color:var(--down); font-weight:600; }
+  .wallet { display:flex; flex-wrap:wrap; align-items:center; gap:8px; margin:8px 0 18px; }
+  .wallet code { background:var(--card); border:1px solid var(--line); border-radius:8px; padding:4px 8px; word-break:break-all; }
+  button.ghost { font:inherit; font-size:12px; color:var(--fg2); background:var(--card); border:1px solid var(--line); border-radius:8px; padding:4px 10px; cursor:pointer; }
+  button.ghost:hover { color:var(--fg); }
+
+  /* cards */
+  .card { background:var(--card); border:1px solid var(--line); border-radius:var(--radius); padding:16px; box-shadow:var(--shadow); min-width:0; }
+  .card h2 { font-size:13px; font-weight:600; margin:0 0 12px; display:flex; justify-content:space-between; align-items:baseline; gap:8px; }
+  .card h2 .k { font-weight:400; }
+  .kpis { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(210px,100%),1fr)); gap:12px; margin-bottom:12px; }
+  .kpi .v { font-size:28px; font-weight:650; letter-spacing:-.02em; line-height:1.15; margin-top:4px; }
+  .kpi .sub { font-size:12.5px; color:var(--fg2); margin-top:4px; }
+  .meter { height:6px; border-radius:3px; background:var(--sunken); border:1px solid var(--line); overflow:hidden; margin-top:10px; }
+  .meter > div { height:100%; border-radius:3px; background:var(--up); transition:width .3s; }
+  .stats { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(110px,45%),1fr)); gap:1px; background:var(--line); border:1px solid var(--line); border-radius:var(--radius); overflow:hidden; margin-bottom:12px; }
+  .stats > div { background:var(--card); padding:10px 14px; }
+  .stats b { display:block; font-size:16px; font-variant-numeric:tabular-nums; }
+  .mb { margin-bottom:12px; }
+
+  /* chart */
+  #chart { position:relative; height:200px; }
+  #chart svg { display:block; width:100%; height:100%; overflow:visible; }
+  .tip { position:absolute; pointer-events:none; background:var(--card); border:1px solid var(--line); border-radius:8px; padding:6px 9px; font-size:12px; box-shadow:0 4px 14px rgba(0,0,0,.12); white-space:nowrap; transform:translate(-50%,-110%); }
+
+  /* markets */
+  .markets { display:grid; grid-template-columns:repeat(auto-fill,minmax(min(230px,100%),1fr)); gap:12px; margin-bottom:12px; }
+  .mkt { padding:14px; }
+  .mkt .head { display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; }
+  .mkt .name { font-weight:650; }
+  .bar { height:3px; border-radius:2px; background:var(--sunken); overflow:hidden; margin-bottom:10px; }
+  .bar > div { height:100%; background:var(--accent); }
+  .side { display:grid; grid-template-columns:52px 1fr 1fr; gap:6px; font-size:13px; padding:3px 0; }
+  .side .k { font-size:11.5px; }
+  .tag { display:inline-block; font-size:11.5px; font-weight:600; padding:2px 8px; border-radius:6px; background:var(--sunken); color:var(--fg2); margin-top:10px; }
+  .tag.bid { background:var(--accent-bg); color:var(--accent); }
+  .tag.fill { background:var(--up-bg); color:var(--up); }
+
+  /* tables */
+  .scroll { overflow-x:auto; }
+  table { width:100%; border-collapse:collapse; font-variant-numeric:tabular-nums; font-size:13px; }
+  th, td { text-align:left; padding:8px 10px; border-bottom:1px solid var(--line); white-space:nowrap; }
+  th { color:var(--mute); font-weight:500; font-size:11.5px; text-transform:uppercase; letter-spacing:.04em; background:var(--card); }
+  td.r, th.r { text-align:right; }
+  tbody tr:hover td { background:var(--sunken); }
+  tbody tr:last-child td { border-bottom:0; }
   #bycoinhead th { cursor:pointer; user-select:none; }
+  #bycoinhead th:hover { color:var(--fg); }
+  .res { display:inline-block; min-width:52px; text-align:center; font-size:11.5px; font-weight:600; padding:2px 8px; border-radius:6px; }
+  .res.win { background:var(--up-bg); color:var(--up); } .res.loss { background:var(--down-bg); color:var(--down); }
+  .res.nofill { background:var(--sunken); color:var(--mute); font-weight:500; }
+  .pbar { display:inline-block; vertical-align:middle; height:6px; border-radius:3px; margin-left:8px; }
+  #tradesbox { max-height:640px; overflow-y:auto; }
+  #errbox { max-height:300px; overflow-y:auto; }
+  #tradesbox th, #errbox th { position:sticky; top:0; z-index:1; }
+  .empty { color:var(--mute); text-align:center; padding:18px; }
+  label.toggle { font-size:12px; color:var(--fg2); font-weight:400; display:inline-flex; align-items:center; gap:6px; cursor:pointer; }
+  .chips { display:flex; flex-wrap:wrap; gap:6px; }
+  .chip { font-size:12px; color:var(--fg2); background:var(--sunken); border:1px solid var(--line); border-radius:6px; padding:3px 8px; }
+  .chip b { color:var(--fg); font-weight:600; }
 </style>
 </head>
 <body>
 <main>
-  <h1>Scalp Bot <span id="mode" class="k"></span></h1>
-  <div class="k" id="wallet" hidden>Wallet <a id="walletlink" target="_blank" rel="noopener" style="color:inherit; word-break:break-all"></a></div>
-  <div class="sub" id="sub">loading…</div>
-
-  <div class="grid">
-    <div class="card"><div class="k">P&amp;L ($)</div><div class="v" id="pnl">–</div></div>
-    <div class="card"><div class="k">Wins / Losses</div><div class="v" id="wl">–</div></div>
-    <div class="card"><div class="k">Win rate</div><div class="v" id="wr">–</div></div>
-    <div class="card"><div class="k">Windows / Bids / Fills</div><div class="v" id="wbf">–</div></div>
-    <div class="card"><div class="k">Pending settle</div><div class="v" id="pend">–</div></div>
-    <div class="card"><div class="k">Free balance (USDC)</div><div class="v" id="bal">–</div></div>
-    <div class="card"><div class="k">Total (free + in bids &amp; positions)</div><div class="v" id="total">–</div></div>
+  <div class="top">
+    <div class="brand">
+      <h1>Scalp Bot</h1>
+      <span id="mode" class="pill"><span class="dot"></span><span>–</span></span>
+      <span id="status" class="pill">loading…</span>
+    </div>
+    <div class="updated" id="updated"></div>
   </div>
-
-  <div class="card scroll" style="margin-bottom:14px">
-    <div class="k" style="margin-bottom:6px">Open positions (filled, waiting for result)</div>
-    <table><thead><tr><th>Market</th><th>Side</th><th>Entry</th><th>Shares</th><th>Status</th></tr></thead>
-    <tbody id="open"></tbody></table>
+  <div class="wallet" id="wallet" hidden>
+    <span class="k">Wallet</span>
+    <code class="mono" id="walletaddr"></code>
+    <button class="ghost" id="copy" type="button">Copy</button>
+    <a id="walletlink" target="_blank" rel="noopener" class="k" style="color:var(--accent)">Polymarket profile ↗</a>
   </div>
+  <div id="spacer" style="height:12px"></div>
 
-  <div class="grid" id="coins" style="grid-template-columns:repeat(auto-fit,minmax(220px,1fr))"></div>
+  <section class="kpis">
+    <div class="card kpi"><div class="k">Net P&amp;L</div><div class="v num" id="pnl">–</div><div class="sub" id="pnlsub">&nbsp;</div></div>
+    <div class="card kpi"><div class="k">Win rate</div><div class="v num" id="wr">–</div><div class="sub num" id="wl">&nbsp;</div></div>
+    <div class="card kpi"><div class="k">Balance (USDC)</div><div class="v num" id="bal">–</div><div class="sub num" id="total">&nbsp;</div></div>
+    <div class="card kpi"><div class="k">Kill switch</div><div class="v num" id="kill">–</div><div class="sub num" id="killsub">&nbsp;</div><div class="meter"><div id="killbar" style="width:0"></div></div></div>
+  </section>
 
-  <div class="card scroll" style="margin-bottom:14px">
-    <div class="k" style="margin-bottom:6px">Results by coin &amp; window <span class="k">(click a column to sort)</span></div>
-    <table><thead id="bycoinhead"><tr><th>Coin</th><th>Bids</th><th>Fills</th><th>Fill %</th><th>Wins</th><th>Stops / Losses</th><th>P&amp;L</th></tr></thead>
-    <tbody id="bycoin"></tbody></table>
-  </div>
+  <section class="stats">
+    <div><span class="k">Windows</span><b id="st-win">–</b></div>
+    <div><span class="k">Bids</span><b id="st-bids">–</b></div>
+    <div><span class="k">Fills</span><b id="st-fills">–</b></div>
+    <div><span class="k">Fill rate</span><b id="st-rate">–</b></div>
+    <div><span class="k">Pending result</span><b id="st-pend">–</b></div>
+    <div><span class="k">Net errors</span><b id="st-err">–</b></div>
+  </section>
 
-  <div class="card" style="margin-bottom:14px">
-    <div class="k" style="margin-bottom:6px">Error log (newest first, last 100)</div>
-    <div class="scroll" id="errbox"><table><thead><tr><th>Time</th><th>Where</th><th>What</th></tr></thead>
-    <tbody id="errors"></tbody></table></div>
-  </div>
+  <section class="card mb">
+    <h2>Cumulative P&amp;L <span class="k" id="chartcap">settled trades</span></h2>
+    <div id="chart"><div class="empty">no settled trades yet</div></div>
+  </section>
 
-  <div class="card">
-    <div class="k" style="margin-bottom:6px">Trades (newest first)</div>
-    <div class="scroll" id="tradesbox"><table><thead><tr><th>Time</th><th>Market</th><th>Side</th><th>Entry</th><th>Exit</th><th>Size</th><th>P&amp;L</th><th>Result</th></tr></thead>
+  <section class="card mb">
+    <h2>Open positions <span class="k">filled, waiting for result</span></h2>
+    <div class="scroll"><table><thead><tr><th>Market</th><th>Side</th><th class="r">Entry</th><th class="r">Shares</th><th>Status</th></tr></thead>
+    <tbody id="open"></tbody></table></div>
+  </section>
+
+  <h2 style="font-size:13px;margin:18px 0 10px">Live markets</h2>
+  <section class="markets" id="coins"></section>
+
+  <section class="card mb">
+      <h2>Results by coin &amp; window <span class="k">click a column to sort</span></h2>
+      <div class="scroll"><table><thead id="bycoinhead"><tr><th>Market</th><th class="r">Bids</th><th class="r">Fills</th><th class="r">Fill %</th><th class="r">Wins</th><th class="r">Losses</th><th class="r">P&amp;L</th></tr></thead>
+      <tbody id="bycoin"></tbody></table></div>
+  </section>
+
+  <section class="card mb">
+    <h2>Trades <label class="toggle"><input type="checkbox" id="shownofill"> show unfilled bids</label></h2>
+    <div class="scroll" id="tradesbox"><table><thead><tr><th>Time</th><th>Market</th><th>Side</th><th class="r">Entry</th><th class="r">Exit</th><th class="r">Size</th><th class="r">P&amp;L</th><th>Result</th></tr></thead>
     <tbody id="trades"></tbody></table></div>
-  </div>
+  </section>
+
+  <section class="card mb">
+    <h2>Errors <span class="k">newest first · last 100</span></h2>
+    <div class="scroll" id="errbox"><table><thead><tr><th>Time</th><th>Market</th><th>What</th></tr></thead>
+    <tbody id="errors"></tbody></table></div>
+  </section>
+
+  <section class="card">
+    <h2>Settings</h2>
+    <div class="chips" id="config"></div>
+  </section>
 </main>
 <script>
 const $ = id => document.getElementById(id);
-const fmt = t => new Date(t).toLocaleString();
+const fmt = t => new Date(t).toLocaleString([], {month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit'});
+const SPAN = {'5m': 300, '15m': 900, '1h': 3600, '4h': 14400};
 // "btc-updown-15m-…" -> "BTC 15m", "bitcoin-up-or-down-…-et" -> "BTC 1h"
 const series = slug => {
   const p = slug.split('-');
@@ -81,6 +193,9 @@ const series = slug => {
 };
 const esc = t => String(t).replace(/[&<>"]/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;'})[c]);
 const cls = n => n > 0 ? 'pos' : n < 0 ? 'neg' : '';
+const money = (n, d = 2) => (n > 0 ? '+' : n < 0 ? '−' : '') + '$' + Math.abs(n).toFixed(d);
+const left = s => s >= 60 ? `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, '0')}s` : `${s}s`;
+
 // results table sort: column index and direction; clicking the same header flips it
 let sortCol = 0, sortDir = 1;
 $('bycoinhead').onclick = e => {
@@ -89,70 +204,162 @@ $('bycoinhead').onclick = e => {
   sortDir = i === sortCol ? -sortDir : (i ? -1 : 1);  // numbers start biggest-first, names A-Z
   sortCol = i; tick();
 };
+$('shownofill').onchange = () => tick();
+$('copy').onclick = async () => {
+  try { await navigator.clipboard.writeText($('walletaddr').textContent); $('copy').textContent = 'Copied'; }
+  catch (e) { $('copy').textContent = 'Copy failed'; }
+  setTimeout(() => $('copy').textContent = 'Copy', 1500);
+};
+
+// cumulative P&L line: one series, time on x, zero baseline; hover shows the trade under the pointer
+let chartKey = '', points = [];
+function drawChart() {
+  const box = $('chart'), W = box.clientWidth, H = box.clientHeight;
+  if (!points.length) { box.innerHTML = '<div class="empty">no settled trades yet</div>'; return; }
+  const pad = {l: 48, r: 12, t: 10, b: 22};
+  const t0 = points[0].t, t1 = points.at(-1).t || t0 + 1;
+  const ys = points.map(p => p.cum).concat(0), lo = Math.min(...ys), hi = Math.max(...ys);
+  const span = (hi - lo) || 1, ylo = lo - span * .08, yhi = hi + span * .08;
+  const X = t => pad.l + (t1 === t0 ? (W - pad.l - pad.r) / 2 : (t - t0) / (t1 - t0) * (W - pad.l - pad.r));
+  const Y = v => pad.t + (yhi - v) / (yhi - ylo) * (H - pad.t - pad.b);
+  const ticks = [ylo, (ylo + yhi) / 2, yhi].map(v => Math.round(v * 100) / 100);
+  const path = points.map((p, i) => `${i ? 'L' : 'M'}${X(p.t).toFixed(1)},${Y(p.cum).toFixed(1)}`).join('');
+  const area = `${path}L${X(points.at(-1).t).toFixed(1)},${Y(0).toFixed(1)}L${X(t0).toFixed(1)},${Y(0).toFixed(1)}Z`;
+  const losses = points.filter(p => p.res !== 'win').map(p =>
+    `<circle cx="${X(p.t)}" cy="${Y(p.cum)}" r="4" fill="var(--down)" stroke="var(--card)" stroke-width="2"/>`).join('');
+  const at = W < 520 ? [[t0, 'start'], [t1, 'end']] : [[t0, 'start'], [(t0 + t1) / 2, 'middle'], [t1, 'end']];  // phones: no middle date
+  const dates = at.map(([t, anchor]) =>
+    `<text x="${X(t)}" y="${H - 4}" text-anchor="${anchor}"font-size="11" fill="var(--mute)">${new Date(t).toLocaleString([], {month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit'})}</text>`).join('');
+  box.innerHTML = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Cumulative profit and loss over time">
+    ${ticks.map(v => `<line x1="${pad.l}" x2="${W - pad.r}" y1="${Y(v)}" y2="${Y(v)}" stroke="var(--line)"/>
+      <text x="${pad.l - 8}" y="${Y(v) + 4}" text-anchor="end" font-size="11" fill="var(--mute)">${money(v)}</text>`).join('')}
+    <line x1="${pad.l}" x2="${W - pad.r}" y1="${Y(0)}" y2="${Y(0)}" stroke="var(--mute)" stroke-dasharray="3 3"/>
+    <path d="${area}" fill="var(--accent)" opacity=".08"/>
+    <path d="${path}" fill="none" stroke="var(--accent)" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+    ${losses}${dates}
+    <line id="xh" y1="${pad.t}" y2="${H - pad.b}" stroke="var(--mute)" visibility="hidden"/>
+    <circle id="xd" r="4" fill="var(--accent)" stroke="var(--card)" stroke-width="2" visibility="hidden"/>
+  </svg><div class="tip" id="tip" hidden></div>`;
+  const svg = box.querySelector('svg');
+  svg.onpointermove = e => {
+    const x = e.clientX - svg.getBoundingClientRect().left;
+    const p = points.reduce((a, b) => Math.abs(X(b.t) - x) < Math.abs(X(a.t) - x) ? b : a);
+    const px = X(p.t), py = Y(p.cum);
+    $('xh').setAttribute('x1', px); $('xh').setAttribute('x2', px); $('xh').setAttribute('visibility', 'visible');
+    $('xd').setAttribute('cx', px); $('xd').setAttribute('cy', py); $('xd').setAttribute('visibility', 'visible');
+    const tip = $('tip'); tip.hidden = false; tip.style.left = Math.min(Math.max(px, 90), W - 90) + 'px'; tip.style.top = py + 'px';
+    tip.innerHTML = `<b>${money(p.cum)}</b> total<br><span class="k">${fmt(p.t)} · ${esc(p.mkt)} ${esc(p.side)} · </span><span class="${p.res === 'win' ? 'pos' : 'neg'}">${p.res} ${money(p.pnl)}</span>`;
+  };
+  svg.onpointerleave = () => { $('tip').hidden = true; $('xh').setAttribute('visibility', 'hidden'); $('xd').setAttribute('visibility', 'hidden'); };
+}
+new ResizeObserver(() => drawChart()).observe($('chart'));
 
 async function tick() {
   try {
     const s = await (await fetch('status.json?' + Date.now())).json();
     const age = (Date.now() - new Date(s.updated)) / 1000;
-    $('mode').textContent = s.mode;
-    $('wallet').hidden = !s.wallet;
-    if (s.wallet) { $('walletlink').textContent = s.wallet; $('walletlink').href = 'https://polymarket.com/profile/' + s.wallet; }
-    $('sub').innerHTML = `${s.status} · started ${fmt(s.started)} · updated ${Math.round(age)}s ago`
-      + (age > 30 ? ' <span class="stale">(bot not updating)</span>' : '')
-      + ` · entry ${s.config.entry} stop ${s.config.stop ?? 'none (hold)'} size ${s.config.size} · latency ${s.config.latency ?? '–'}s · kill at ${s.config.max_losses} losses or -$${s.config.max_loss_usd ?? '–'} · net errors ${s.net_errors}`;
-    $('pnl').textContent = (s.pnl >= 0 ? '+' : '') + s.pnl.toFixed(2); $('pnl').className = 'v ' + cls(s.pnl);
-    $('wl').innerHTML = `${s.wins} / <span class="${s.losses ? 'neg' : ''}">${s.losses}</span><span class="k"> of ${s.config.max_losses}</span>`;
+    const live = s.mode === 'LIVE';
+    $('mode').className = 'pill' + (live ? ' live' : '');
+    $('mode').lastElementChild.textContent = live ? 'LIVE' : 'DRY RUN';
+    const running = s.status === 'running', killed = /KILL/.test(s.status);
+    $('status').className = 'pill ' + (running && age <= 30 ? 'ok' : killed || age > 30 ? 'bad' : '');
+    $('status').textContent = age > 30 ? 'not updating' : running ? 'Running' : s.status;
+    $('updated').innerHTML = `started ${fmt(s.started)} · updated ${Math.round(age)}s ago` + (age > 30 ? ' <span class="stale">· bot not updating</span>' : '');
+    $('wallet').hidden = !s.wallet; $('spacer').hidden = !!s.wallet;
+    if (s.wallet) { $('walletaddr').textContent = s.wallet; $('walletlink').href = 'https://polymarket.com/profile/' + s.wallet; }
+
     const done = s.wins + s.losses;
+    $('pnl').textContent = money(s.pnl); $('pnl').className = 'v num ' + cls(s.pnl);
+    $('pnlsub').textContent = done ? `${money(s.pnl / done, 3)} per settled trade` : 'no settled trades yet';
     $('wr').textContent = done ? (100 * s.wins / done).toFixed(1) + '%' : '–';
-    $('wbf').textContent = `${s.windows} / ${s.bids} / ${s.fills}`;
-    $('pend').textContent = s.pending.length;
-    $('errors').innerHTML = (s.errors || []).slice().reverse()
-      .map(e => `<tr><td>${fmt(e.time)}</td><td>${esc(e.where)}</td><td class="neg">${esc(e.what)}</td></tr>`).join('')
-      || '<tr><td colspan="3" class="k">no errors</td></tr>';
-    $('bal').textContent = s.balance == null ? '–' : s.balance.toFixed(2);
+    $('wl').innerHTML = `${s.wins} wins · <span class="${s.losses ? 'neg' : ''}">${s.losses} losses</span>`;
+    $('bal').textContent = s.balance == null ? '–' : '$' + s.balance.toFixed(2);
     // money tied up at cost: open bids (dry run locks the full bid; live only spends on fills) + filled shares
     const locked = Object.values(s.coins).filter(c => c.position)
-      .reduce((a, c) => a + c.position.entry * (s.mode === 'LIVE' ? c.position.held : s.config.size), 0)
+      .reduce((a, c) => a + c.position.entry * (live ? c.position.held : s.config.size), 0)
       + s.pending.reduce((a, p) => a + p.entry * p.held, 0);
-    $('total').textContent = s.balance == null ? '–' : (s.balance + locked).toFixed(2);
+    $('total').textContent = s.balance == null ? '' : `free · $${(s.balance + locked).toFixed(2)} incl. $${locked.toFixed(2)} in bids & positions`;
+    // kill switch: whichever limit is closer to tripping
+    const ml = s.config.max_losses, mu = s.config.max_loss_usd ?? 20;
+    const used = Math.max(ml ? s.losses / ml : 0, s.pnl < 0 ? -s.pnl / mu : 0);
+    $('kill').textContent = killed ? 'Tripped' : `${Math.round(100 * Math.min(used, 1))}% used`;
+    $('kill').className = 'v num ' + (killed || used >= .75 ? 'neg' : used >= .4 ? 'warn' : '');
+    $('killsub').textContent = (ml ? `${s.losses} of ${ml} losses · ` : '') + `stops at −$${mu}`;
+    $('killbar').style.width = Math.min(100, 100 * used) + '%';
+    $('killbar').style.background = used >= .75 ? 'var(--down)' : used >= .4 ? 'var(--warn)' : 'var(--up)';
+
+    $('st-win').textContent = s.windows; $('st-bids').textContent = s.bids; $('st-fills').textContent = s.fills;
+    $('st-rate').textContent = s.bids ? (100 * s.fills / s.bids).toFixed(0) + '%' : '–';
+    $('st-pend').textContent = s.pending.length; $('st-err').textContent = s.net_errors;
+
+    $('errors').innerHTML = (s.errors || []).slice().reverse()
+      .map(e => `<tr><td class="k">${fmt(e.time)}</td><td>${esc(e.where)}</td><td class="neg" style="white-space:normal;min-width:220px">${esc(e.what)}</td></tr>`).join('')
+      || '<tr><td colspan="3" class="empty">no errors</td></tr>';
+
     const open = Object.entries(s.coins).filter(([, c]) => c.position && c.position.held > 0)
       .map(([k, c]) => [k.replace('-', ' ').toUpperCase(), c.position.side, c.position.entry, c.position.held,
-        `in window · ${c.market ? c.market.seconds_left : '?'}s left · bid ${c.market ? c.market.books[c.market.outcomes.indexOf(c.position.side)][0].toFixed(3) : '?'}`])
+        `in window · ${c.market ? left(c.market.seconds_left) : '?'} left · bid ${c.market ? c.market.books[c.market.outcomes.indexOf(c.position.side)][0].toFixed(3) : '?'}`])
       .concat(s.pending.map(p => [series(p.slug), p.side, p.entry, p.held, 'window closed · waiting for Polymarket result']));
-    $('open').innerHTML = open.map(r => `<tr><td><b>${r[0]}</b></td><td>${r[1]}</td><td>${r[2]}</td><td>${r[3]}</td><td class="k">${r[4]}</td></tr>`).join('')
-      || '<tr><td colspan="5" class="k">none</td></tr>';
+    $('open').innerHTML = open.map(r => `<tr><td><b>${esc(r[0])}</b></td><td>${esc(r[1])}</td><td class="r">${r[2]}</td><td class="r">${r[3]}</td><td class="k">${r[4]}</td></tr>`).join('')
+      || '<tr><td colspan="5" class="empty">no open positions</td></tr>';
+
     $('coins').innerHTML = Object.entries(s.coins).map(([coin, c]) => {
-      const m = c.market, p = c.position;
-      const books = m ? m.outcomes.map((o, i) => `<div><span class="k">${o}</span> <b>${m.books[i][0].toFixed(3)}</b> / ${m.books[i][1].toFixed(3)}</div>`).join('') : '<div class="k">waiting for market…</div>';
-      const pos = p ? `${p.side} @ ${p.entry} · ${p.status} · held ${p.held}` + (p.status === 'bidding' ? ` · ${Math.round(p.ahead)} ahead` : '') : 'no position';
-      return `<div class="card"><div style="display:flex;justify-content:space-between"><b>${coin.replace('-', ' ').toUpperCase()}</b><span class="k">${m ? m.seconds_left + 's left' : ''}</span></div>${books}<div class="k" style="margin-top:6px">${pos}</div></div>`;
+      const m = c.market, p = c.position, [name, span] = coin.split('-');
+      const frac = m ? Math.max(0, Math.min(1, m.seconds_left / (SPAN[span] || 300))) : 0;
+      const books = m ? m.outcomes.map((o, i) => `<div class="side"><span class="k">${esc(o)}</span><span>bid <b class="num">${m.books[i][0].toFixed(3)}</b></span><span class="k num">ask ${m.books[i][1].toFixed(3)}</span></div>`).join('')
+        : '<div class="k">waiting for market…</div>';
+      const tag = !p ? '<span class="tag">no position</span>'
+        : p.status === 'bidding' ? `<span class="tag bid">Bidding ${esc(p.side)} @ ${p.entry} · ${Math.round(p.ahead)} ahead</span>`
+        : `<span class="tag fill">${esc(p.status)} ${esc(p.side)} @ ${p.entry} · ${p.held} sh</span>`;
+      return `<div class="card mkt"><div class="head"><span class="name">${name.toUpperCase()} <span class="k">${span}</span></span><span class="k num">${m ? left(m.seconds_left) + ' left' : ''}</span></div>
+        <div class="bar"><div style="width:${(100 * frac).toFixed(1)}%"></div></div>${books}${tag}</div>`;
     }).join('');
-  } catch (e) { $('sub').innerHTML = '<span class="stale">status.json not found — is bot.py running?</span>'; }
+
+    $('config').innerHTML = Object.entries({
+      'Entry': s.config.entry, 'Size': s.config.size + ' sh', 'Steady': s.config.steady + 's', 'Stop': s.config.stop ?? 'none (hold)',
+      'Min z': s.config.min_z || 'off', 'Min move': s.config.min_move ? s.config.min_move + '%' : 'off',
+      'Latency': (s.config.latency ?? '–') + 's', 'Kill': (s.config.max_losses ? s.config.max_losses + ' losses / ' : '') + '−$' + (s.config.max_loss_usd ?? '–'),
+    }).map(([k, v]) => `<span class="chip">${k} <b>${esc(v)}</b></span>`).join('');
+  } catch (e) {
+    $('status').className = 'pill bad'; $('status').textContent = 'no status';
+    $('updated').innerHTML = '<span class="stale">status.json not found — is bot.py running?</span>';
+  }
 
   try {
     const txt = await (await fetch('trades.csv?' + Date.now())).text();
-    const rows = txt.trim().split('\n').slice(1).map(r => r.split(',')).sort((a, b) => new Date(b[0]) - new Date(a[0]));
+    const rows = txt.trim().split('\n').slice(1).filter(r => r).map(r => r.split(',')).sort((a, b) => new Date(b[0]) - new Date(a[0]));
+    const settled = r => r[7] === 'win' || r[7] === 'stop' || r[7] === 'loss';
     const by = {};
     for (const r of rows) {
       const c = series(r[1]), b = by[c] ??= {bids: 0, fills: 0, wins: 0, bad: 0, pnl: 0};
       if (r[7] === 'nofill') b.bids++;
-      if (r[7] === 'win' || r[7] === 'stop' || r[7] === 'loss') { b.bids++; b.fills++; b.pnl += parseFloat(r[6]); }
+      if (settled(r)) { b.bids++; b.fills++; b.pnl += parseFloat(r[6]); }
       if (r[7] === 'win') b.wins++;
       if (r[7] === 'stop' || r[7] === 'loss') b.bad++;
     }
     const key = ([c, b]) => [c, b.bids, b.fills, b.bids ? b.fills / b.bids : 0, b.wins, b.bad, b.pnl][sortCol];
-    const ths = $('bycoinhead').querySelectorAll('th');
-    ths.forEach((th, i) => th.textContent = th.textContent.replace(/ [▲▼]$/, '') + (i === sortCol ? (sortDir > 0 ? ' ▲' : ' ▼') : ''));
+    $('bycoinhead').querySelectorAll('th').forEach((th, i) => th.textContent = th.textContent.replace(/ [▲▼]$/, '') + (i === sortCol ? (sortDir > 0 ? ' ▲' : ' ▼') : ''));
+    const maxAbs = Math.max(0.01, ...Object.values(by).map(b => Math.abs(b.pnl)));
     $('bycoin').innerHTML = Object.entries(by).sort((x, y) => { const a = key(x), b = key(y); return (a < b ? -1 : a > b ? 1 : 0) * sortDir; }).map(([c, b]) =>
-      `<tr><td><b>${c}</b></td><td>${b.bids}</td><td>${b.fills}</td><td>${b.bids ? (100 * b.fills / b.bids).toFixed(0) : 0}%</td><td class="pos">${b.wins}</td><td class="${b.bad ? 'neg' : ''}">${b.bad}</td><td class="${cls(b.pnl)}">${b.pnl.toFixed(2)}</td></tr>`
-    ).join('') || '<tr><td colspan="7" class="k">no trades yet</td></tr>';
-    $('trades').innerHTML = rows.map(r => {
-      const p = parseFloat(r[6]);
+      `<tr><td><b>${esc(c)}</b></td><td class="r">${b.bids}</td><td class="r">${b.fills}</td><td class="r">${b.bids ? (100 * b.fills / b.bids).toFixed(0) : 0}%</td><td class="r pos">${b.wins}</td><td class="r ${b.bad ? 'neg' : 'k'}">${b.bad}</td>
+        <td class="r ${cls(b.pnl)}">${money(b.pnl)}<span class="pbar" style="width:${Math.round(40 * Math.abs(b.pnl) / maxAbs)}px;background:${b.pnl < 0 ? 'var(--down)' : 'var(--up)'};opacity:.55"></span></td></tr>`
+    ).join('') || '<tr><td colspan="7" class="empty">no trades yet</td></tr>';
+
+    const show = $('shownofill').checked ? rows : rows.filter(settled);
+    $('trades').innerHTML = show.map(r => {
       if (r[7] === 'nofill')
-        return `<tr class="k"><td>${fmt(r[0])}</td><td>${series(r[1])}</td><td>${r[2]}</td><td>bid ${r[3]}</td><td>–</td><td>0</td><td>–</td><td>no fill (no trade)</td></tr>`;
-      const rc = r[7] === 'win' ? 'pos' : (r[7] === 'loss' || r[7] === 'stop') ? 'neg' : 'k';
-      return `<tr><td>${fmt(r[0])}</td><td>${series(r[1])}</td><td>${r[2]}</td><td>${r[3]}</td><td>${r[4]}</td><td>${r[5]}</td><td class="${cls(p)}">${p.toFixed(2)}</td><td class="${rc}">${r[7]}</td></tr>`;
-    }).join('') || '<tr><td colspan="8" class="k">no trades yet</td></tr>';
+        return `<tr class="k"><td>${fmt(r[0])}</td><td>${esc(series(r[1]))}</td><td>${esc(r[2])}</td><td class="r">bid ${esc(r[3])}</td><td class="r">–</td><td class="r">0</td><td class="r">–</td><td><span class="res nofill">no fill</span></td></tr>`;
+      const p = parseFloat(r[6]), res = r[7] === 'win' ? 'win' : 'loss';
+      return `<tr><td class="k">${fmt(r[0])}</td><td><b>${esc(series(r[1]))}</b></td><td>${esc(r[2])}</td><td class="r">${esc(r[3])}</td><td class="r">${esc(r[4])}</td><td class="r">${esc(r[5])}</td><td class="r ${cls(p)}">${money(p)}</td><td><span class="res ${res}">${esc(r[7])}</span></td></tr>`;
+    }).join('') || `<tr><td colspan="8" class="empty">${rows.length ? 'no settled trades yet · tick "show unfilled bids" to see bids' : 'no trades yet'}</td></tr>`;
+
+    // chart data: settled trades oldest first, redrawn only when they change
+    const asc = rows.filter(settled).reverse();
+    let cum = 0;
+    points = asc.map(r => ({t: new Date(r[0]).getTime(), pnl: parseFloat(r[6]), cum: cum += parseFloat(r[6]), res: r[7], mkt: series(r[1]), side: r[2]}));
+    $('chartcap').textContent = `${points.length} settled trades · red dots are losses`;
+    const k = points.length + ':' + cum.toFixed(4);
+    if (k !== chartKey) { chartKey = k; drawChart(); }
   } catch (e) {}
 }
 tick(); setInterval(tick, 2000);

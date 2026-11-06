@@ -141,6 +141,7 @@
     <div><span class="k">Fill rate</span><b id="st-rate">–</b></div>
     <div><span class="k">Pending result</span><b id="st-pend">–</b></div>
     <div><span class="k">Net errors</span><b id="st-err">–</b></div>
+    <div><span class="k" id="st-latk">Latency</span><b id="st-lat">–</b></div>
   </section>
 
   <section class="card mb">
@@ -291,6 +292,14 @@ async function tick() {
     $('st-win').textContent = s.windows; $('st-bids').textContent = s.bids; $('st-fills').textContent = s.fills;
     $('st-rate').textContent = s.bids ? (100 * s.fills / s.bids).toFixed(0) + '%' : '–';
     $('st-pend').textContent = s.pending.length; $('st-err').textContent = s.net_errors;
+    // live: median of the last order posts + the latest API ping; dry run: the simulated order delay
+    const om = (s.order_ms || []).slice().sort((a, b) => a - b), med = om.length ? om[om.length >> 1] : null;
+    $('st-latk').textContent = live ? `Latency (order · ping)` : 'Sim latency';
+    $('st-lat').innerHTML = live
+      ? `${med ?? '–'}<span class="k"> ms</span> · ${s.ping_ms ?? '–'}<span class="k"> ms</span>`
+      : `${Math.round((s.config.latency ?? 0) * 1000)}<span class="k"> ms</span>`;
+    $('st-lat').className = live && med > 300 ? 'warn' : '';
+    $('st-lat').title = live ? `orders: median of last ${om.length} posts${om.length ? ' (' + om[0] + '–' + om.at(-1) + ' ms)' : ''} · ping: balance check every 30s` : '';
 
     $('errors').innerHTML = (s.errors || []).slice().reverse()
       .map(e => `<tr><td class="k">${fmt(e.time)}</td><td>${esc(e.where)}</td><td class="neg" style="white-space:normal;min-width:220px">${esc(e.what)}</td></tr>`).join('')

@@ -228,8 +228,18 @@ def keep_running(losses, pnl_):
 
 
 def live_balance():
+    t0 = time.perf_counter()
     r = client.get_balance_allowance(BalanceAllowanceParams(asset_type=AssetType.COLLATERAL))
+    state["ping_ms"] = round((time.perf_counter() - t0) * 1000)  # dashboard: API round trip, every 30s
     return int(r["balance"]) / 1e6  # pUSD has 6 decimals
+
+
+def note_latency(t0):
+    """Live: keep the last 50 order-post round trips (ms) for the dashboard."""
+    with lock:
+        lat = state.setdefault("order_ms", [])
+        lat.append(round((time.perf_counter() - t0) * 1000))
+        del lat[:-50]
 
 
 def reserve(cost):
@@ -498,7 +508,9 @@ def trade_window(coin, m):
                     print(f"  {coin} BID {m['outcomes'][i]} {SIZE}@{entry}  queue ahead {feed.level(tok, entry):.0f}  {left}s left" + (f"  z={z[i][0]:.2f} move={z[i][1]:.3f}%" if MIN_Z or MIN_MOVE else ""))
                     if LIVE:
                         o = signed[i] or client.create_order(OrderArgs(token_id=tok, price=entry, size=SIZE, side=BUY))
+                        t0 = time.perf_counter()
                         resp = client.post_order(o, OrderType.GTC, post_only=True)
+                        note_latency(t0)
                         order_id = resp.get("orderID")
                         if not order_id:
                             error(m["slug"], f"order rejected: {resp}")
@@ -709,6 +721,11 @@ def test():
     MIN_Z, MIN_MOVE = 2.0, 0.05
     assert odds_ok((3.4, 0.08)) and not odds_ok((3.4, 0.02)) and not odds_ok((1.5, 0.08)) and not odds_ok(None)
     MIN_Z = MIN_MOVE = 0.0
+    # order latency: keeps only the last 50 timings
+    for _ in range(60):
+        note_latency(time.perf_counter())
+    assert len(state["order_ms"]) == 50 and all(x >= 0 for x in state["order_ms"])
+    del state["order_ms"]
     # live client wrapper: calls pass through, one at a time
     w = Locked(f)
     assert w.other == f.other and w.level("U", 0.5) == 0.0 and not w._lock.locked()

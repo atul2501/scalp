@@ -195,7 +195,7 @@ const series = slug => {
 const esc = t => String(t).replace(/[&<>"]/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;'})[c]);
 const cls = n => n > 0 ? 'pos' : n < 0 ? 'neg' : '';
 const money = (n, d = 2) => (n > 0 ? '+' : n < 0 ? '−' : '') + '$' + Math.abs(n).toFixed(d);
-const left = s => s >= 60 ? `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, '0')}s` : `${s}s`;
+const left = s => s < 0 ? `closed ${-s}s ago` : s >= 60 ? `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, '0')}s` : `${s}s`;
 
 // results table sort: column index and direction; clicking the same header flips it
 let sortCol = 0, sortDir = 1;
@@ -320,7 +320,7 @@ async function tick() {
       const tag = !p ? '<span class="tag">no position</span>'
         : p.status === 'bidding' ? `<span class="tag bid">Bidding ${esc(p.side)} @ ${p.entry} · ${Math.round(p.ahead)} ahead</span>`
         : `<span class="tag fill">${esc(p.status)} ${esc(p.side)} @ ${p.entry} · ${p.held} sh</span>`;
-      return `<div class="card mkt"><div class="head"><span class="name">${name.toUpperCase()} <span class="k">${span}</span></span><span class="k num">${m ? left(m.seconds_left) + ' left' : ''}</span></div>
+      return `<div class="card mkt"><div class="head"><span class="name">${name.toUpperCase()} <span class="k">${span}</span></span><span class="k num">${m ? left(m.seconds_left) + (m.seconds_left < 0 ? '' : ' left') : ''}</span></div>
         <div class="bar"><div style="width:${(100 * frac).toFixed(1)}%"></div></div>${books}${tag}</div>`;
     }).join('');
 

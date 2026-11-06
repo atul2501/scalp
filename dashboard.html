@@ -318,7 +318,8 @@ async function tick() {
     $('config').innerHTML = Object.entries({
       'Entry': s.config.entry, 'Size': s.config.size + ' sh', 'Steady': s.config.steady + 's', 'Stop': s.config.stop ?? 'none (hold)',
       'Min z': s.config.min_z || 'off', 'Min move': s.config.min_move ? s.config.min_move + '%' : 'off',
-      'Latency': (s.config.latency ?? '–') + 's', 'Kill': (s.config.max_losses ? s.config.max_losses + ' losses / ' : '') + '−$' + (s.config.max_loss_usd ?? '–'),
+      ...(live ? {} : {'Sim latency': (s.config.latency ?? '–') + 's'}),  // dry-run order delay; live orders take real network time
+      'Kill': (s.config.max_losses ? s.config.max_losses + ' losses / ' : '') + '−$' + (s.config.max_loss_usd ?? '–'),
     }).map(([k, v]) => `<span class="chip">${k} <b>${esc(v)}</b></span>`).join('');
   } catch (e) {
     $('status').className = 'pill bad'; $('status').textContent = 'no status';

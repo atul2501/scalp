@@ -72,6 +72,7 @@ client = None
 if LIVE:
     from py_clob_client_v2 import ClobClient, OrderArgs, MarketOrderArgs, OrderType, BalanceAllowanceParams, AssetType, OrderPayload, OrderMarketCancelParams
     from py_clob_client_v2.order_builder.constants import BUY, SELL
+    from py_clob_client_v2.exceptions import PolyApiException
     client = ClobClient(CLOB, key=os.environ["PRIVATE_KEY"], chain_id=137,
                         signature_type=int(os.getenv("SIGNATURE_TYPE", "3")), funder=os.getenv("FUNDER"))
     client.set_api_creds(client.create_or_derive_api_key())
@@ -559,10 +560,18 @@ def trade_window(coin, m):
                     if LIVE:
                         o = signed[i] or client.create_order(OrderArgs(token_id=tok, price=entry, size=SIZE, side=BUY))
                         t0 = time.perf_counter()
-                        resp = client.post_order(o, OrderType.GTC, post_only=True)
+                        try:
+                            resp = client.post_order(o, OrderType.GTC, post_only=True)
+                        except PolyApiException as e:
+                            if "crosses book" not in str(e):
+                                raise
+                            # the ask dropped to our price while the order was in flight: post-only refuses to buy at once
+                            resp = {}
+                            view["position"]["status"] = "rejected (price reached our bid first)"
+                            print(f"  {coin} bid not placed: ask reached {entry} before our post-only order landed")
                         note_latency(t0)
                         order_id = resp.get("orderID")
-                        if not order_id:
+                        if resp and not order_id:
                             error(m["slug"], f"order rejected: {resp}")
                     break
 
